@@ -55,11 +55,12 @@ export const ACTIONS: ActionDef[] = [
   { name: 'state.set', description: 'записать значение', requires: null, params: ['key', 'value'] },
   { name: 'state.inc', description: 'прибавить к числу', requires: null, params: ['key', 'by', 'min', 'max'] },
   { name: 'state.toggle', description: 'инвертировать булево', requires: null, params: ['key'] },
+  { name: 'state.random', description: 'случайное число (min, max) или строка (chars, length) — единственный источник случайности', requires: null, params: ['key', 'min', 'max', 'integer', 'chars', 'length'] },
   { name: 'state.reset', description: 'вернуть начальное состояние', requires: null, params: [] },
   { name: 'records.add', description: 'добавить запись в историю', requires: null, params: ['values'] },
   { name: 'records.remove', description: 'удалить запись', requires: null, params: ['id'] },
   { name: 'records.clear', description: 'очистить историю', requires: null, params: [] },
-  { name: 'timer.start', description: 'запустить обратный отсчёт', requires: null, params: ['seconds'] },
+  { name: 'timer.start', description: 'запустить обратный отсчёт; seconds обязателен', requires: null, params: ['seconds'] },
   { name: 'timer.pause', description: 'поставить на паузу', requires: null, params: [] },
   { name: 'timer.reset', description: 'сбросить таймер', requires: null, params: [] },
   { name: 'clipboard.set', description: 'скопировать в буфер', requires: 'clipboard', params: ['value'] },
@@ -67,7 +68,8 @@ export const ACTIONS: ActionDef[] = [
   { name: 'haptics', description: 'вибро-отклик; kind: light | medium | success | warning | error', requires: 'haptics', params: ['kind'] },
   { name: 'toast', description: 'короткое сообщение', requires: null, params: ['text'] },
   { name: 'notify.schedule', description: 'локальное уведомление', requires: 'notifications', params: ['title', 'body', 'afterSeconds'] },
-  { name: 'llm.ask', description: 'запрос к модели, тратит кредиты; результат кладётся в into', requires: 'llm', params: ['prompt', 'into', 'imageUri'] },
+  { name: 'camera.capture', description: 'снимок с камеры (source: camera) или из галереи (source: library); base64 кладётся в into', requires: 'camera', params: ['into', 'source'] },
+  { name: 'llm.ask', description: 'запрос к модели, тратит кредиты; ответ кладётся в into; image — поле state со снимком', requires: 'llm', params: ['prompt', 'into', 'image'] },
 ];
 
 /** Функции, доступные в выражениях. Всё остальное парсер отвергает. */
@@ -82,8 +84,15 @@ export const FILTER_NAMES = ['money', 'number', 'integer', 'percent', 'date', 't
 
 /** Значения, которые рантайм подставляет в область видимости сам. */
 export const BUILTIN_SCOPE = [
+  'nowMs',
+  'llmBusy', 'llmError',
   'recordCount', 'recordValues',
   'timerRunning', 'timerElapsed', 'timerRemaining', 'timerFinished',
+];
+
+/** Свойства, которые понимает любой узел независимо от типа. */
+export const UNIVERSAL_PROPS = [
+  'visible', // выражение; узел не рендерится, если ложно
 ];
 
 export const ACCENT_COLORS = ['blue', 'green', 'amber', 'violet', 'rose', 'teal'] as const;

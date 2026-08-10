@@ -78,9 +78,124 @@ export function validateSpec(input: unknown): SpecValidation {
   }
 
   walk(spec.ui, spec, errors, evaluator, 'ui');
+  checkWiring(spec, errors);
 
   if (errors.length > 40) errors.length = 40;
   return errors.length === 0 ? { ok: true, spec } : { ok: false, errors };
+}
+
+/**
+ * Правила связности. Ловят класс ошибок, который валиден структурно, но даёт
+ * утилиту, которая молча ничего не делает — а для пользователя это неотличимо
+ * от сломанного приложения и тратит его кредиты впустую.
+ *
+ * Шаги собираются обходом дерева, а не регулярками по JSON: в параметрах
+ * экшенов сплошь и рядом встречаются подстановки вида {{products}}, и любой
+ * шаблон с фигурными скобками ломал сопоставление, из-за чего проверки
+ * незаметно переставали срабатывать.
+ */
+type Step = Record<string, unknown>;
+
+function collectSteps(node: UiNode, out: Step[]): void {
+  if (Array.isArray(node.onPress)) {
+    for (const raw of node.onPress) {
+      if (raw && typeof raw === 'object') out.push(raw as Step);
+    }
+  }
+  if (Array.isArray(node.children)) node.children.forEach((child) => collectSteps(child, out));
+}
+
+function checkWiring(spec: MiniAppSpec, errors: string[]): void {
+  const steps: Step[] = [];
+  collectSteps(spec.ui, steps);
+
+  const serialized = JSON.stringify(spec.ui);
+  const named = (name: string) => steps.filter((step) => step.action === name);
+  const usesPrefix = (prefix: string) => steps.some((step) => String(step.action ?? '').startsWith(prefix));
+
+  if (usesPrefix('records.') && !spec.records) {
+    errors.push(
+      'records: используется экшен records.*, но блок records не объявлен. ' +
+        'Добавь records: { fields: [{key,label,kind}], valueField: "ключ" } — ' +
+        'иначе записи не сохранятся, а recordValues всегда будет пустым',
+    );
+  }
+  if (spec.records && !spec.records.valueField) {
+    errors.push('records.valueField: не задан — recordValues будет пустым, график и sum() дадут ноль');
+  }
+
+  for (const step of named('timer.start')) {
+    if (step.seconds === undefined) {
+      errors.push('timer.start: не указан seconds — отсчёт превратится в секундомер и покажет 00:00');
+    }
+  }
+
+  if (usesPrefix('timer.') && !/timerRemaining|timerElapsed|timerRunning|timerFinished/.test(serialized)) {
+    errors.push(
+      'timer: таймер запускается, но ни один блок не показывает timerRemaining, ' +
+        'timerElapsed, timerRunning или timerFinished — пользователь не увидит отсчёта',
+    );
+  }
+
+  // random() в выражениях нет намеренно: пересчёт derived менял бы результат
+  // на каждый рендер. Подсказываем это прямо, иначе модель будет пробовать снова.
+  if (/\brandom\s*\(/.test(serialized + JSON.stringify(spec.derived ?? {}))) {
+    errors.push('выражения: функции random() не существует. Используй экшен state.random');
+  }
+
+  for (const step of named('state.random')) {
+    const key = typeof step.key === 'string' ? step.key : null;
+    if (key && !(key in spec.state)) errors.push(`state.random: ключа "${key}" нет в state`);
+  }
+
+  checkAiWiring(spec, steps, serialized, errors);
+}
+
+/**
+ * Связки AI-утилит. Отдельно, потому что ошибка здесь не просто ломает утилиту:
+ * она тратит кредиты пользователя на вызов, результат которого некуда положить
+ * или нечего показать.
+ */
+function checkAiWiring(spec: MiniAppSpec, steps: Step[], serialized: string, errors: string[]): void {
+  const asks = steps.filter((step) => step.action === 'llm.ask');
+  const captures = steps.filter((step) => step.action === 'camera.capture');
+
+  for (const step of asks) {
+    const into = typeof step.into === 'string' ? step.into : null;
+    if (!into) {
+      errors.push('llm.ask: не указан into — ответ модели некуда положить, кредиты спишутся впустую');
+    } else if (!(into in spec.state)) {
+      errors.push(`llm.ask: into="${into}" не объявлен в state`);
+    } else if (!serialized.includes(`{{${into}`)) {
+      errors.push(
+        `llm.ask: результат кладётся в "${into}", но ни один блок его не показывает. ` +
+          `Добавь { "type": "Text", "value": "{{${into}}}", "visible": "${into} != ''" }`,
+      );
+    }
+
+    if (step.image !== undefined) {
+      const key = String(step.image).replace(/[{}\s]/g, '');
+      if (!(key in spec.state)) errors.push(`llm.ask: image="${String(step.image)}" не объявлен в state`);
+      if (captures.length === 0) {
+        errors.push('llm.ask: указан image, но снимок нечем сделать — добавь экшен camera.capture');
+      }
+    }
+  }
+
+  for (const step of captures) {
+    const into = typeof step.into === 'string' ? step.into : null;
+    if (!into) errors.push('camera.capture: не указан into — снимок некуда положить');
+    else if (!(into in spec.state)) errors.push(`camera.capture: into="${into}" не объявлен в state`);
+  }
+
+  // Ожидание ответа модели длится секунды. Без блокировки кнопки человек
+  // нажмёт её повторно и заплатит дважды за один результат.
+  if (asks.length > 0 && !/llmBusy/.test(serialized)) {
+    errors.push(
+      'llm.ask: нигде не используется llmBusy. Заблокируй кнопку через "disabled": "llmBusy" ' +
+        'и покажи ожидание, иначе пользователь нажмёт повторно и потратит кредиты дважды',
+    );
+  }
 }
 
 function walk(
@@ -129,6 +244,14 @@ function walk(
       node.onPress.forEach((raw, index) =>
         checkStep(raw as Record<string, unknown>, spec, errors, `${path}.onPress[${index}]`),
       );
+    }
+  }
+
+  if (typeof node.visible === 'string') {
+    try {
+      evaluator.compile(node.visible);
+    } catch (error) {
+      errors.push(`${path}.visible: ${error instanceof ExpressionError ? error.message : String(error)}`);
     }
   }
 

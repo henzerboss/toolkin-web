@@ -7,8 +7,8 @@ import { ensureAccount, type Account } from '@/lib/credits';
  * из RevenueCat — регистрации в приложении нет.
  */
 
-export const TOOLKIN_MODELS: string[] = (
-  process.env.TOOLKIN_MODELS ?? 'gemini-2.5-flash,gemini-2.5-flash-lite'
+export const MODELS: string[] = (
+  process.env.TOOLKIN_MODELS ?? 'gemini-3.6-flash,gemini-3.1-flash-lite'
 )
   .split(',')
   .map((m) => m.trim())
@@ -139,8 +139,11 @@ export async function callGemini(
   const parts: GeminiPart[] = [{ text: prompt }];
   if (options.imageBase64) parts.push({ inlineData: { mimeType: 'image/jpeg', data: options.imageBase64 } });
 
+  // Ошибка последней попытки уходит в ответ роута: самая частая причина
+  // отказа — снятая с обслуживания модель, и без текста Google это выглядит
+  // как «что-то пошло не так» вместо «поменяй TOOLKIN_MODELS».
   let lastError = 'unavailable';
-  for (const model of TOOLKIN_MODELS) {
+  for (const model of MODELS) {
     for (let attempt = 0; attempt < ATTEMPTS_PER_MODEL; attempt++) {
       try {
         const result = await callOnce(model, apiKey, system, parts, options.jsonOnly !== false);
