@@ -14,7 +14,6 @@
   },
   "dependencies": {
     "@prisma/client": "6.14.0",
-    "next": "^15.5.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "zod": "^4.3.6"
@@ -23,6 +22,7 @@
     "@types/node": "^22.15.0",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
+    "next": "^15.5.23",
     "prisma": "6.14.0",
     "typescript": "^5.9.2"
   }

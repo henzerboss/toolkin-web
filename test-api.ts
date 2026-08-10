@@ -2,7 +2,7 @@ import assert from 'node:assert';
 import { validateSpec } from './src/lib/validateSpec';
 import { buildSystemInstruction } from './src/app/api/_prompt';
 import { creditsForProduct } from './src/lib/pricing';
-import { DEMO_SPECS } from '../runtime/src/specs';
+import { DEMO_SPECS } from './src/lib/exampleSpecs';
 
 // Валидатор сайта и валидатор приложения должны совпадать: спека, принятая
 // одним, обязана проходить у другого, иначе человек платит за генерацию,
