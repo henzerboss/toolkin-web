@@ -1,0 +1,38 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Баланс живёт на сервере: кредиты расходуемые, и клиенту их считать нельзя.
+// Ledger хранит каждую операцию, а уникальный eventId делает начисление по
+// вебхуку RevenueCat идемпотентным — повторная доставка не начислит дважды.
+
+model Account {
+  id                  String   @id @default(cuid())
+  appUserId           String   @unique // анонимный app_user_id из RevenueCat
+  credits             Int      @default(0)
+  freeGenerationsLeft Int      @default(4) // выдаются один раз, не ежемесячно
+  premiumUntil        DateTime?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  entries             Ledger[]
+
+  @@index([premiumUntil])
+}
+
+model Ledger {
+  id        String   @id @default(cuid())
+  accountId String
+  account   Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  delta     Int // отрицательное — списание, положительное — начисление
+  reason    String // generate | refine | ask | purchase | subscription | grant | refund
+  eventId   String?  @unique // id события RevenueCat
+  meta      String? // JSON: число попыток генерации, product_id
+  createdAt DateTime @default(now())
+
+  @@index([accountId, createdAt])
+}

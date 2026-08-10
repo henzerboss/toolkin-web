@@ -1,0 +1,121 @@
+:root {
+  --paper: #f4f2ee;
+  --ink: #14161a;
+  --ink-soft: #5b6068;
+  --rule: #ddd9d2;
+  --accent: #1f6feb;
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #101215;
+    --ink: #f0f2f5;
+    --ink-soft: #969ca6;
+    --rule: #262a30;
+    --accent: #5b9bff;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 17px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+main {
+  max-width: 44rem;
+  margin: 0 auto;
+  padding: 4rem 1.5rem 6rem;
+}
+
+/* Логотип набран моноширинным: продукт про инструменты, и шрифт это говорит
+   раньше, чем текст. */
+.wordmark {
+  font-family: var(--mono);
+  font-size: 0.95rem;
+  letter-spacing: 0.08em;
+  text-transform: lowercase;
+  color: var(--ink-soft);
+  text-decoration: none;
+}
+
+h1 {
+  font-size: clamp(2.2rem, 7vw, 3.4rem);
+  line-height: 1.08;
+  letter-spacing: -0.03em;
+  font-weight: 600;
+  margin: 2.5rem 0 1rem;
+  text-wrap: balance;
+}
+
+h2 {
+  font-size: 1.15rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 3rem 0 0.75rem;
+}
+
+p { margin: 0 0 1rem; max-width: 34rem; }
+
+.lead { font-size: 1.2rem; color: var(--ink-soft); max-width: 32rem; }
+
+a { color: var(--accent); text-underline-offset: 3px; }
+
+hr {
+  border: none;
+  border-top: 1px solid var(--rule);
+  margin: 3rem 0;
+}
+
+.examples {
+  list-style: none;
+  padding: 0;
+  margin: 2rem 0 0;
+  display: grid;
+  gap: 1px;
+  background: var(--rule);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.examples li {
+  background: var(--paper);
+  padding: 0.85rem 1.1rem;
+  font-family: var(--mono);
+  font-size: 0.9rem;
+  color: var(--ink-soft);
+}
+
+.examples li::before {
+  content: "› ";
+  color: var(--accent);
+}
+
+footer {
+  border-top: 1px solid var(--rule);
+  margin-top: 4rem;
+  padding-top: 1.5rem;
+  font-size: 0.9rem;
+  color: var(--ink-soft);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.25rem;
+}
+
+footer a { color: var(--ink-soft); }
+
+.doc h2 { margin-top: 2.25rem; }
+.doc p, .doc li { color: var(--ink-soft); }
+.doc ul { max-width: 34rem; padding-left: 1.2rem; }
+.doc li { margin-bottom: 0.4rem; }
+.updated { font-family: var(--mono); font-size: 0.8rem; }

@@ -1,0 +1,174 @@
+# Развёртывание на CloudPanel
+
+Проверено на Ubuntu 24.04 + CloudPanel v2. Домен `toolkin.app`, пользователь сайта
+`toolkin`, порт приложения `3010`.
+
+## 1. Сайт в CloudPanel
+
+**Сайты → Добавить сайт → Node.js.**
+
+| Поле | Значение |
+|---|---|
+| Имя домена | `toolkin.app` |
+| Версия Node.js | **22 LTS** (панель принимает 12–22; Node 24 форма отвергнет) |
+| Порт приложения | **3010** (3000 обычно уже занят другим сайтом) |
+| Пользователь сайта | `toolkin` |
+
+Порт наружу не выставляется — CloudPanel настраивает nginx как обратный прокси
+на `127.0.0.1:3010`.
+
+## 2. DNS — до выпуска сертификата
+
+У регистратора две A-записи на IP сервера:
+
+```
+@     A    195.35.48.60
+www   A    195.35.48.60
+```
+
+Проверка перед следующим шагом:
+
+```bash
+dig +short toolkin.app
+dig +short www.toolkin.app
+```
+
+Обе должны вернуть IP сервера. Если домен за Cloudflare — на время выпуска
+отключите проксирование (серое облачко): оранжевое ломает HTTP-01 проверку.
+
+Симптом неверной записи — при выпуске сертификата Let's Encrypt пишет
+`Invalid response from http://toolkin.app/.well-known/acme-challenge/...: 500`
+и указывает IP, к которому обратился. Если этот IP не ваш — дело в DNS, а не в
+сертификате.
+
+## 3. SSL
+
+**SSL/TLS → Новый сертификат Let's Encrypt → Создать и установить.**
+
+Обязательно и сразу: зона `.app` целиком в HSTS-preload списке, браузеры
+отказываются открывать её по HTTP. Без сертификата сайт не откроется вообще.
+
+На саму ACME-проверку HSTS не влияет — она идёт по 80-му порту штатно.
+
+## 4. PostgreSQL
+
+Менеджер баз в CloudPanel рассчитан на MySQL (`clpctl` внутри вызывает
+`mysqldump`), поэтому Postgres ставится вручную:
+
+```bash
+sudo apt update && sudo apt install -y postgresql
+sudo systemctl enable --now postgresql
+
+sudo -u postgres psql <<'SQL'
+CREATE USER toolkin WITH PASSWORD 'ПАРОЛЬ' CREATEDB;
+CREATE DATABASE toolkin OWNER toolkin;
+SQL
+```
+
+`CREATEDB` нужен, потому что `prisma migrate dev` создаёт временную теневую базу
+для проверки миграций. Без этого права команда падает.
+
+Postgres по умолчанию слушает только localhost — снаружи он недоступен, менять
+это не нужно.
+
+## 5. Код
+
+По SSH под пользователем сайта:
+
+```bash
+cd /home/toolkin/htdocs/toolkin.app
+# распаковать сюда содержимое архива
+npm ci
+cp .env.example .env
+nano .env
+```
+
+Минимум, без чего не стартует:
+
+```env
+DATABASE_URL=postgresql://toolkin:ПАРОЛЬ@localhost:5432/toolkin
+TOOLKIN_GEMINI_API_KEY=...
+TOOLKIN_CLIENT_TOKEN=...длинная случайная строка...
+TOOLKIN_REVENUECAT_WEBHOOK_SECRET=...ещё одна...
+```
+
+Спецсимволы в пароле (`@`, `:`, `/`, `#`) кодируйте процентами, иначе Prisma
+разберёт строку подключения неправильно.
+
+## 6. Миграция и сборка
+
+```bash
+npx prisma migrate dev --name init
+npm run build
+```
+
+`npm run build` вызывает `prisma generate` перед сборкой — клиент Prisma не
+разъедется со схемой.
+
+## 7. PM2
+
+```bash
+npm i -g pm2
+mkdir -p /home/toolkin/logs
+pm2 start ecosystem.config.js
+pm2 save
+pm2 startup systemd -u toolkin --hp /home/toolkin
+# выполнить sudo-команду, которую PM2 напечатает
+```
+
+Проверка до всякого nginx:
+
+```bash
+curl -s "localhost:3010/api/app-version?platform=ios&version=1.0.0"
+```
+
+## 8. Приложение
+
+Один домен обслуживает и лендинг, и API — отдельный `api.` поддомен на своём
+сервере только добавляет сертификат и vhost без пользы.
+
+В `.env` Expo-проекта:
+
+```env
+EXPO_PUBLIC_API_BASE=https://toolkin.app/api
+EXPO_PUBLIC_TOOLKIN_CLIENT_TOKEN=то же, что TOOLKIN_CLIENT_TOKEN на сервере
+```
+
+## 9. RevenueCat
+
+**Integrations → Webhooks:**
+
+- URL: `https://toolkin.app/api/webhooks/revenuecat`
+- Authorization header: значение `TOOLKIN_REVENUECAT_WEBHOOK_SECRET`
+
+Сравнение секрета идёт через `timingSafeEqual`, значение должно совпадать байт в
+байт. Проверка живости:
+
+```bash
+curl -s https://toolkin.app/api/webhooks/revenuecat
+# {"ok":true,"endpoint":"RevenueCat webhook"}
+```
+
+## Обновления
+
+Всегда в этом порядке — иначе поймаете минуту с новым кодом на старой схеме:
+
+```bash
+npm ci && npx prisma migrate deploy && npm run build && pm2 restart toolkin
+```
+
+На сервере именно `migrate deploy`, а не `migrate dev`: он только применяет уже
+созданные миграции и ничего не генерирует.
+
+## Если не работает
+
+**502 Bad Gateway** — процесс упал или слушает не тот порт.
+`pm2 logs toolkin --lines 50`; почти всегда это отсутствующая переменная в `.env`.
+
+**Правки `.env` не видны** — Next.js читает переменные при старте.
+`pm2 restart toolkin` после каждой правки.
+
+**Ошибка Prisma про клиент** — не выполнен `prisma generate`. Он внутри
+`npm run build`, но при ручной сборке вызывайте отдельно.
+
+**Сертификат не выпускается** — см. шаг 2, это DNS.
