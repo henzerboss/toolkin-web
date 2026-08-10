@@ -1,6 +1,6 @@
 import type { Prisma } from '@prisma/client';
 import prisma from '@/lib/prisma';
-import { FREE_GENERATIONS } from '@/lib/pricing';
+import { WELCOME_CREDITS } from '@/lib/pricing';
 
 /**
  * Кредиты — единственный ресурс, который нельзя считать на клиенте.
@@ -8,23 +8,38 @@ import { FREE_GENERATIONS } from '@/lib/pricing';
  * пополняется вебхуком RevenueCat. Клиент получает баланс только для показа.
  */
 
-export type CreditReason = 'generate' | 'refine' | 'ask' | 'purchase' | 'subscription' | 'grant' | 'refund';
+export type CreditReason =
+  | 'generate' | 'refine' | 'ask'
+  | 'welcome' | 'purchase' | 'subscription' | 'grant' | 'refund';
 
 export interface Account {
   id: string;
   appUserId: string;
   credits: number;
-  freeGenerationsLeft: number;
+  welcomeGranted: boolean;
   premiumUntil: Date | null;
 }
 
 export async function ensureAccount(appUserId: string): Promise<Account> {
-  return prisma.account.upsert({
+  // Приветственные кредиты начисляются в момент создания аккаунта и попадают
+  // в ledger: без записи в журнале потом невозможно отличить подарок от покупки.
+  const account = await prisma.account.upsert({
     where: { appUserId },
     update: {},
-    create: { appUserId, credits: 0, freeGenerationsLeft: FREE_GENERATIONS() },
-    select: { id: true, appUserId: true, credits: true, freeGenerationsLeft: true, premiumUntil: true },
+    create: { appUserId, credits: WELCOME_CREDITS(), welcomeGranted: true },
+    select: { id: true, appUserId: true, credits: true, welcomeGranted: true, premiumUntil: true },
   });
+
+  if (account.welcomeGranted) {
+    const logged = await prisma.ledger.findFirst({ where: { accountId: account.id, reason: 'welcome' } });
+    if (!logged) {
+      await prisma.ledger.create({
+        data: { accountId: account.id, delta: WELCOME_CREDITS(), reason: 'welcome' },
+      });
+    }
+  }
+
+  return account;
 }
 
 export function hasPremium(account: Account): boolean {
@@ -33,10 +48,7 @@ export function hasPremium(account: Account): boolean {
 
 export interface ChargeResult {
   ok: boolean;
-  /** Что именно оплатило действие — приложение показывает это в интерфейсе. */
-  paidWith: 'free' | 'credits' | null;
   credits: number;
-  freeGenerationsLeft: number;
 }
 
 /**
@@ -49,27 +61,10 @@ export async function charge(
   amount: number,
   meta?: Record<string, unknown>,
 ): Promise<ChargeResult> {
-  // Возвращаемый тип колбэка указан явно: без него TypeScript расширяет
-  // литерал 'free' до string, и результат перестаёт подходить под ChargeResult.
   return prisma.$transaction(async (tx: Prisma.TransactionClient): Promise<ChargeResult> => {
     const account = await tx.account.findUnique({ where: { appUserId } });
-    if (!account) return { ok: false, paidWith: null, credits: 0, freeGenerationsLeft: 0 };
-
-    // Бесплатные генерации тратятся первыми: пользователь не должен обнаружить,
-    // что купленные кредиты ушли, пока бесплатные лежали нетронутыми.
-    if (reason === 'generate' && account.freeGenerationsLeft > 0) {
-      const updated = await tx.account.update({
-        where: { id: account.id },
-        data: { freeGenerationsLeft: { decrement: 1 } },
-      });
-      await tx.ledger.create({
-        data: { accountId: account.id, delta: 0, reason, meta: meta ? JSON.stringify(meta) : null },
-      });
-      return { ok: true, paidWith: 'free', credits: updated.credits, freeGenerationsLeft: updated.freeGenerationsLeft };
-    }
-
-    if (account.credits < amount) {
-      return { ok: false, paidWith: null, credits: account.credits, freeGenerationsLeft: account.freeGenerationsLeft };
+    if (!account || account.credits < amount) {
+      return { ok: false, credits: account?.credits ?? 0 };
     }
 
     const updated = await tx.account.update({
@@ -80,12 +75,11 @@ export async function charge(
       data: { accountId: account.id, delta: -amount, reason, meta: meta ? JSON.stringify(meta) : null },
     });
 
-    return { ok: true, paidWith: 'credits', credits: updated.credits, freeGenerationsLeft: updated.freeGenerationsLeft };
+    return { ok: true, credits: updated.credits };
   });
 }
 
-export async function canAfford(account: Account, reason: CreditReason, amount: number): Promise<boolean> {
-  if (reason === 'generate' && account.freeGenerationsLeft > 0) return true;
+export function canAfford(account: Account, amount: number): boolean {
   return account.credits >= amount;
 }
 

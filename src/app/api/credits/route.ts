@@ -1,6 +1,6 @@
 import { cors, guard, json } from '../_shared';
 import { hasPremium } from '@/lib/credits';
-import { COST, FREE_GENERATIONS } from '@/lib/pricing';
+import { COST, SUBSCRIPTION_CREDITS, WELCOME_CREDITS } from '@/lib/pricing';
 
 export const runtime = 'nodejs';
 
@@ -21,8 +21,8 @@ export async function GET(req: Request) {
   return json(
     {
       credits: account!.credits,
-      freeGenerationsLeft: account!.freeGenerationsLeft,
-      freeGenerationsTotal: FREE_GENERATIONS(),
+      welcomeCredits: WELCOME_CREDITS(),
+      subscriptionCredits: SUBSCRIPTION_CREDITS(),
       premium: hasPremium(account!),
       premiumUntil: account!.premiumUntil?.toISOString() ?? null,
       prices: {

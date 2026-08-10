@@ -40,7 +40,7 @@ export async function POST(req: Request) {
   const locale = (body.locale ?? current.spec.manifest.locale ?? 'en').trim();
   const price = COST.refine();
 
-  if (!(await canAfford(account!, 'refine', price))) {
+  if (!canAfford(account!, price)) {
     return json({ error: 'insufficient_credits', credits: account!.credits, price }, 402, headers);
   }
 
@@ -71,9 +71,7 @@ export async function POST(req: Request) {
     {
       spec,
       attempts: result.attempts,
-      paidWith: charged.paidWith,
       credits: charged.credits,
-      freeGenerationsLeft: charged.freeGenerationsLeft,
     },
     200,
     headers,

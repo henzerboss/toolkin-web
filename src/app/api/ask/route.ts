@@ -47,7 +47,7 @@ export async function POST(req: Request) {
   }
 
   const price = COST.ask();
-  if (!(await canAfford(account!, 'ask', price))) {
+  if (!canAfford(account!, price)) {
     return json({ error: 'insufficient_credits', credits: account!.credits, price }, 402, headers);
   }
 
@@ -66,7 +66,7 @@ export async function POST(req: Request) {
   const charged = await charge(account!.appUserId, 'ask', price, { appId: body.appId });
 
   return json(
-    { text: (result.text ?? '').trim(), credits: charged.credits, paidWith: charged.paidWith },
+    { text: (result.text ?? '').trim(), credits: charged.credits },
     200,
     headers,
   );

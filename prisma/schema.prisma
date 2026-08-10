@@ -15,7 +15,7 @@ model Account {
   id                  String   @id @default(cuid())
   appUserId           String   @unique // анонимный app_user_id из RevenueCat
   credits             Int      @default(0)
-  freeGenerationsLeft Int      @default(4) // выдаются один раз, не ежемесячно
+  welcomeGranted      Boolean  @default(false) // приветственные кредиты уже начислены
   premiumUntil        DateTime?
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
@@ -29,7 +29,7 @@ model Ledger {
   accountId String
   account   Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
   delta     Int // отрицательное — списание, положительное — начисление
-  reason    String // generate | refine | ask | purchase | subscription | grant | refund
+  reason    String // generate | refine | ask | welcome | purchase | subscription | grant | refund
   eventId   String?  @unique // id события RevenueCat
   meta      String? // JSON: число попыток генерации, product_id
   createdAt DateTime @default(now())
