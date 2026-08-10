@@ -49,7 +49,9 @@ export async function charge(
   amount: number,
   meta?: Record<string, unknown>,
 ): Promise<ChargeResult> {
-  return prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+  // Возвращаемый тип колбэка указан явно: без него TypeScript расширяет
+  // литерал 'free' до string, и результат перестаёт подходить под ChargeResult.
+  return prisma.$transaction(async (tx: Prisma.TransactionClient): Promise<ChargeResult> => {
     const account = await tx.account.findUnique({ where: { appUserId } });
     if (!account) return { ok: false, paidWith: null, credits: 0, freeGenerationsLeft: 0 };
 

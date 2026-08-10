@@ -95,7 +95,7 @@ ui.children[2].onPress[0]: экшен "clipboard.set" требует capability 
 схеме:
 
 ```bash
-npm ci && npx prisma migrate deploy && npm run build && pm2 restart toolkin
+npm install && npx prisma migrate deploy && npm run build && pm2 restart toolkin
 ```
 
 ## Страницы

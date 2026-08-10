@@ -78,9 +78,22 @@ Postgres по умолчанию слушает только localhost — сн�
 ```bash
 cd /home/toolkin/htdocs/toolkin.app
 # распаковать сюда содержимое архива
-npm ci
+npm install
 cp .env.example .env
 nano .env
+```
+
+Если `echo $NODE_ENV` выводит `production`, ставьте `npm install --include=dev`:
+иначе npm пропустит devDependencies, а Prisma CLI лежит именно там.
+
+Версии Prisma закреплены жёстко (`6.14.0`, без `^`) сознательно. Prisma 7 убрала
+поддержку `url` в блоке `datasource` и требует отдельный `prisma.config.ts` —
+переезд на неё это отдельная задача, а не побочный эффект установки.
+
+Проверьте, что CLI взялся локальный, а не скачался из реестра:
+
+```bash
+npx prisma --version   # должно быть 6.x
 ```
 
 Минимум, без чего не стартует:
@@ -154,7 +167,7 @@ curl -s https://toolkin.app/api/webhooks/revenuecat
 Всегда в этом порядке — иначе поймаете минуту с новым кодом на старой схеме:
 
 ```bash
-npm ci && npx prisma migrate deploy && npm run build && pm2 restart toolkin
+npm install && npx prisma migrate deploy && npm run build && pm2 restart toolkin
 ```
 
 На сервере именно `migrate deploy`, а не `migrate dev`: он только применяет уже
