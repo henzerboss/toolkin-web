@@ -66,6 +66,7 @@ export default function Privacy() {
       <hr />
       <footer>
         <Link href="/">На главную</Link>
+        <Link href="/terms">Условия</Link>
         <Link href="/support">Поддержка</Link>
       </footer>
     </main>

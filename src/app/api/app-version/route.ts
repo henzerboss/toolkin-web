@@ -59,8 +59,8 @@ export async function GET(req: Request) {
   const storeUrl =
     envValue(`${prefix}_STORE_URL`) ??
     (platform === 'ios'
-      ? 'https://apps.apple.com/app/id0000000000'
-      : 'https://play.google.com/store/apps/details?id=app.toolkin');
+      ? 'https://apps.apple.com/app/id6799972749'
+      : 'https://play.google.com/store/apps/details?id=store.evsi.toolkin');
 
   const updateAvailable = compare(current, latestVersion) < 0;
   const isBlocking = minimumVersion !== null && compare(current, minimumVersion) < 0;

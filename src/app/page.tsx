@@ -42,6 +42,7 @@ export default function Home() {
 
       <footer>
         <Link href="/privacy">Конфиденциальность</Link>
+        <Link href="/terms">Условия</Link>
         <Link href="/support">Поддержка</Link>
         <a href="mailto:hello@toolkin.app">hello@toolkin.app</a>
       </footer>
