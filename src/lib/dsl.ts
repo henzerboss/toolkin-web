@@ -29,7 +29,7 @@ export interface ActionDef {
 
 export const CAPABILITIES = [
   'clipboard', 'haptics', 'share', 'notifications',
-  'camera', 'scanner', 'sensors', 'location', 'files', 'network', 'llm', 'image',
+  'camera', 'scanner', 'sensors', 'location', 'files', 'network', 'llm', 'image', 'sandbox',
 ] as const;
 
 export type Capability = (typeof CAPABILITIES)[number];
@@ -49,12 +49,13 @@ export const COMPONENTS: ComponentDef[] = [
   { type: 'Select', description: 'segmented choice; bind, label, options: [{value,label}]', binds: true, required: ['options'] },
   { type: 'Button', description: 'button; title, variant: primary | secondary, onPress is a list of actions', required: ['title'] },
   { type: 'Image', description: 'picture from a state field (photo or generated); source is the key name, ratio: square | portrait | landscape', required: ['source'] },
+  { type: 'Sandbox', description: 'isolated HTML/JS for games and canvas drawing; html is fully self-contained code, ratio: square | portrait | landscape', required: ['html'] },
   { type: 'Gallery', description: 'grid of photos from record history; imageKey is the record field with the file path, columns 2–4', required: [] },
   { type: 'LineChart', description: 'line over recent entries; values is an expression returning a list of numbers (usually recordValues)', required: ['values'] },
   { type: 'PieChart', description: 'donut chart by category; groupBy is the record field to group by, valueKey is what to sum', required: ['groupBy'] },
   { type: 'Calendar', description: 'month grid; bind holds the selected date (timestamp), dateKey is the record field to mark', binds: true },
   { type: 'DateField', description: 'date or time picker; bind holds a timestamp in ms, mode: date | time', binds: true },
-  { type: 'Table', description: 'table over record history; columns: [{key,label}] — one per records field', required: ['columns'] },
+  { type: 'Table', description: 'table over record history; columns: [{key,label}], max 3 columns — a phone fits no more; image fields render as thumbnails', required: ['columns'] },
   { type: 'List', description: 'record history; valueKey is the record field, imageKey adds a thumbnail, suffix, limit', required: [] },
 ];
 

@@ -149,6 +149,44 @@ function checkWiring(spec: MiniAppSpec, errors: string[]): void {
   }
 
   checkAiWiring(spec, steps, serialized, errors);
+  checkSandbox(spec, errors);
+}
+
+/**
+ * Песочница исполняет сгенерированный код, поэтому проверяется строже прочего.
+ * Внешние скрипты и сетевые вызовы запрещены не из перестраховки: WebView
+ * отрезан от сети, такой код просто не заработает, а пользователь увидит
+ * пустой прямоугольник вместо игры и не поймёт почему.
+ */
+function checkSandbox(spec: MiniAppSpec, errors: string[]): void {
+  const sandboxes: string[] = [];
+  const walkNode = (node: UiNode): void => {
+    if (node.type === 'Sandbox' && typeof node.html === 'string') sandboxes.push(node.html);
+    if (Array.isArray(node.children)) node.children.forEach(walkNode);
+  };
+  walkNode(spec.ui);
+
+  if (sandboxes.length > 0 && !spec.capabilities.includes('sandbox')) {
+    errors.push('Sandbox: the "sandbox" capability is missing from capabilities');
+  }
+
+  for (const html of sandboxes) {
+    if (/<script[^>]+src=/i.test(html)) {
+      errors.push('Sandbox: external scripts are not loadable — the sandbox has no network. Inline all code');
+    }
+    if (/\b(fetch|XMLHttpRequest|WebSocket|importScripts)\s*\(/.test(html)) {
+      errors.push('Sandbox: network calls do not work inside the sandbox. Remove fetch/XMLHttpRequest/WebSocket');
+    }
+    if (/https?:\/\//.test(html.replace(/https?:\/\/www\.w3\.org[^"']*/g, ''))) {
+      errors.push('Sandbox: external links do not load. Draw with canvas or CSS instead of remote assets');
+    }
+    if (html.length > 60_000) {
+      errors.push('Sandbox: html is too large (limit 60000 characters). Simplify the game');
+    }
+    if (!/onclick|addEventListener|touchstart/i.test(html)) {
+      errors.push('Sandbox: no input handlers found — the game will not react to touch');
+    }
+  }
 }
 
 /**

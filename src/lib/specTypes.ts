@@ -24,7 +24,8 @@ export type Capability =
   | 'files'
   | 'network'
   | 'llm'
-  | 'image';
+  | 'image'
+  | 'sandbox';
 
 export interface ActionStep {
   action: string;

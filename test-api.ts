@@ -100,6 +100,26 @@ noCamera.ui.children[1].onPress[0].image = 'photo';
 assert.match(validateSpec(noCamera).ok ? '' : validateSpec(noCamera).errors.join('\n'), /camera\.capture/);
 console.log('AI-связки проверены');
 
+// Игра в песочнице: единственный способ собрать змейку или арканоид.
+const game = {
+  schemaVersion: 1, id: 'snake', version: 1,
+  manifest: { name: 'Змейка', icon: 'device-gamepad', color: 'green', locale: 'ru' },
+  capabilities: ['sandbox'],
+  state: { best: 0 },
+  records: { fields: [{ key: 'score', label: 'Очки', kind: 'number' }], valueField: 'score' },
+  ui: { type: 'Screen', children: [
+    { type: 'Stat', label: 'Рекорд', value: '{{best | integer}}' },
+    { type: 'Sandbox', ratio: 'square',
+      html: '<canvas id="g"></canvas><script>document.addEventListener("touchstart",function(){toolkin.save({score:10})});</script>' },
+  ] },
+};
+assert.ok(validateSpec(game).ok, 'игра в песочнице должна проходить');
+
+const remote = JSON.parse(JSON.stringify(game));
+remote.ui.children[1].html = '<script src="https://cdn.example.com/x.js"></script><canvas onclick="x()"></canvas>';
+assert.match(validateSpec(remote).ok ? '' : validateSpec(remote).errors.join('\n'), /external scripts/);
+console.log('Песочница проверена');
+
 const sys = buildSystemInstruction('ru');
 assert.ok(sys.includes('Russian') && sys.includes('llm.ask') && sys.includes('ProgressRing'));
 
