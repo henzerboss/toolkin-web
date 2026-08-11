@@ -1,4 +1,4 @@
-import { cors, guard, json } from '../_shared';
+import { THINKING, cors, guard, json } from '../_shared';
 import { buildRefinePrompt, buildSystemInstruction } from '../_prompt';
 import { generateSpec } from '../_generate';
 import { canAfford, charge } from '@/lib/credits';
@@ -47,6 +47,8 @@ export async function POST(req: Request) {
   const result = await generateSpec(
     buildSystemInstruction(locale),
     buildRefinePrompt(current.spec, instruction),
+    THINKING.refine,
+    'refine',
   );
 
   if (!result.ok) {

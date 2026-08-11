@@ -1,4 +1,4 @@
-import { callGemini, cors, guard, json } from '../_shared';
+import { THINKING, callGemini, cors, guard, json } from '../_shared';
 import { canAfford, charge } from '@/lib/credits';
 import { COST } from '@/lib/pricing';
 
@@ -50,7 +50,7 @@ async function toEnglish(prompt: string): Promise<string> {
       'Верни только перевод: без кавычек, пояснений и предисловий. ' +
       'Сохрани все детали, стиль и перечисления.',
     prompt,
-    { jsonOnly: false },
+    { jsonOnly: false, thinking: THINKING.translate, purpose: 'translate' },
   );
 
   const translated = (result.text ?? '').trim();

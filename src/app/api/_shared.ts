@@ -7,15 +7,55 @@ import { ensureAccount, type Account } from '@/lib/credits';
  * из RevenueCat — регистрации в приложении нет.
  */
 
-export const MODELS: string[] = (
-  process.env.TOOLKIN_MODELS ?? 'gemini-3.6-flash,gemini-3.1-flash-lite'
-)
-  .split(',')
-  .map((m) => m.trim())
-  .filter(Boolean);
+const parseModels = (value: string | undefined, fallback: string): string[] =>
+  (value ?? fallback)
+    .split(',')
+    .map((model) => model.trim())
+    .filter(Boolean);
 
-const TEMPERATURE = Number.parseFloat(process.env.TOOLKIN_TEMPERATURE ?? '0.4');
+export const MODELS: string[] = parseModels(process.env.TOOLKIN_MODELS, 'gemini-3.6-flash,gemini-3.1-flash-lite');
+
+/**
+ * Модели подобраны по задаче, а не одна на всё.
+ *
+ * Генерация случается редко и требовательна: там окупается старшая модель.
+ * Ответы внутри утилит массовые и простые — им хватает lite, а разница в
+ * задержке заметна пользователю напрямую. Планирование и перевод промпта
+ * для картинки настолько узкие, что старшая модель там только тратит время.
+ */
+export const MODELS_BY_PURPOSE = {
+  plan: parseModels(process.env.TOOLKIN_MODELS_PLAN, MODELS.join(',')),
+  generate: parseModels(process.env.TOOLKIN_MODELS_GENERATE, MODELS.join(',')),
+  refine: parseModels(process.env.TOOLKIN_MODELS_REFINE, MODELS.join(',')),
+  ask: parseModels(process.env.TOOLKIN_MODELS_ASK, MODELS.join(',')),
+  translate: parseModels(process.env.TOOLKIN_MODELS_TRANSLATE, MODELS.join(',')),
+} as const;
+
+export type Purpose = keyof typeof MODELS_BY_PURPOSE;
+
 const MAX_OUTPUT_TOKENS = Number.parseInt(process.env.TOOLKIN_MAX_OUTPUT_TOKENS ?? '8192', 10);
+
+/**
+ * Уровень размышления. У Gemini 3 это thinkingLevel, а не thinkingBudget,
+ * и совсем отключить его у Flash и Flash-Lite нельзя — по умолчанию medium.
+ *
+ * Разный уровень на разные задачи не каприз: выбор между песочницей и
+ * декларативной сборкой, между fields и свободным текстом — это планирование,
+ * и там высокий уровень окупается. А перевод промпта для картинки планирования
+ * не требует, зато напрямую добавляет секунды ожидания.
+ *
+ * Температура здесь не задаётся сознательно: Gemini 3 её игнорирует,
+ * а видимая в конфиге, но не работающая ручка хуже отсутствующей.
+ */
+export type ThinkingLevel = 'low' | 'medium' | 'high';
+
+export const THINKING: Record<'plan' | 'generate' | 'refine' | 'ask' | 'translate', ThinkingLevel> = {
+  plan: (process.env.TOOLKIN_THINKING_PLAN as ThinkingLevel) ?? 'medium',
+  generate: (process.env.TOOLKIN_THINKING_GENERATE as ThinkingLevel) ?? 'high',
+  refine: (process.env.TOOLKIN_THINKING_REFINE as ThinkingLevel) ?? 'medium',
+  ask: (process.env.TOOLKIN_THINKING_ASK as ThinkingLevel) ?? 'low',
+  translate: 'low',
+};
 const ATTEMPTS_PER_MODEL = 2;
 const RETRY_DELAY_MS = 120;
 
@@ -101,6 +141,8 @@ async function callOnce(
   system: string,
   parts: GeminiPart[],
   jsonOnly: boolean,
+  thinking: ThinkingLevel,
+  responseSchema?: Record<string, unknown>,
 ): Promise<GeminiResult> {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
@@ -111,9 +153,14 @@ async function callOnce(
       systemInstruction: { parts: [{ text: system }] },
       contents: [{ role: 'user', parts }],
       generationConfig: {
-        temperature: TEMPERATURE,
         maxOutputTokens: MAX_OUTPUT_TOKENS,
+        thinkingConfig: { thinkingLevel: thinking },
         ...(jsonOnly ? { responseMimeType: 'application/json' } : {}),
+        // Ограниченное декодирование: модель физически не может вернуть
+        // несуществующий компонент или возможность. Схема передаётся только
+        // здесь и намеренно не дублируется в промпте — документация Google
+        // предупреждает, что дублирование снижает качество вывода.
+        ...(responseSchema ? { responseSchema } : {}),
       },
     }),
   });
@@ -131,7 +178,13 @@ async function callOnce(
 export async function callGemini(
   system: string,
   prompt: string,
-  options: { imageBase64?: string; jsonOnly?: boolean } = {},
+  options: {
+    imageBase64?: string;
+    jsonOnly?: boolean;
+    thinking?: ThinkingLevel;
+    purpose?: Purpose;
+    responseSchema?: Record<string, unknown>;
+  } = {},
 ): Promise<GeminiResult> {
   const apiKey = process.env.TOOLKIN_GEMINI_API_KEY ?? process.env.RECIPE_GEMINI_API_KEY;
   if (!apiKey) return { ok: false, error: 'TOOLKIN_GEMINI_API_KEY missing' };
@@ -143,10 +196,20 @@ export async function callGemini(
   // отказа — снятая с обслуживания модель, и без текста Google это выглядит
   // как «что-то пошло не так» вместо «поменяй TOOLKIN_MODELS».
   let lastError = 'unavailable';
-  for (const model of MODELS) {
+  const models = options.purpose ? MODELS_BY_PURPOSE[options.purpose] : MODELS;
+
+  for (const model of models) {
     for (let attempt = 0; attempt < ATTEMPTS_PER_MODEL; attempt++) {
       try {
-        const result = await callOnce(model, apiKey, system, parts, options.jsonOnly !== false);
+        const result = await callOnce(
+          model,
+          apiKey,
+          system,
+          parts,
+          options.jsonOnly !== false,
+          options.thinking ?? 'medium',
+          options.responseSchema,
+        );
         if (result.ok) return result;
         lastError = result.error ?? 'unknown';
       } catch (error) {

@@ -1,6 +1,5 @@
 import { cors, guard, json } from '../_shared';
-import { buildGeneratePrompt, buildSystemInstruction } from '../_prompt';
-import { generateSpec } from '../_generate';
+import { generateFromRequest } from '../_generate';
 import { canAfford, charge } from '@/lib/credits';
 import { COST } from '@/lib/pricing';
 
@@ -40,7 +39,7 @@ export async function POST(req: Request) {
     return json({ error: 'insufficient_credits', credits: account!.credits, price }, 402, headers);
   }
 
-  const result = await generateSpec(buildSystemInstruction(locale), buildGeneratePrompt(prompt, locale));
+  const result = await generateFromRequest(prompt, locale);
 
   if (!result.ok) {
     return json(
@@ -56,6 +55,7 @@ export async function POST(req: Request) {
     {
       spec: result.spec,
       attempts: result.attempts,
+      kind: result.plan?.kind,
       credits: charged.credits,
     },
     200,

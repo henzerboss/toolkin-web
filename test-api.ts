@@ -1,6 +1,6 @@
 import assert from 'node:assert';
 import { validateSpec } from './src/lib/validateSpec';
-import { buildSystemInstruction } from './src/app/api/_prompt';
+import { buildGeneratePrompt, buildSystemInstruction } from './src/app/api/_prompt';
 import { creditsForProduct } from './src/lib/pricing';
 import { DEMO_SPECS } from './src/lib/exampleSpecs';
 
@@ -150,6 +150,41 @@ assert.match(kbjuErrors, /free-text llm\.ask/);
 assert.match(kbjuErrors, /nothing displays it/);
 console.log('Числа и фото в истории проверены');
 
+// Игровое поле из кнопок: модель упорно строила так, а такая игра
+// не может ни ходить за компьютера, ни анимироваться.
+const cells = ['c0', 'c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'c7', 'c8'];
+const buttonBoard = {
+  schemaVersion: 1, id: 'ttt', version: 1,
+  manifest: { name: 'Крестики-нолики', icon: 'grid-dots', color: 'teal', locale: 'ru' },
+  capabilities: [],
+  state: { wins: 0, ...Object.fromEntries(cells.map((c) => [c, ''])) },
+  ui: { type: 'Screen', children: [
+    { type: 'Stat', label: 'Побед', value: '{{wins | integer}}' },
+    ...cells.map((c) => ({
+      type: 'Button', title: '{{' + c + '}}',
+      onPress: [{ action: 'state.set', key: c, value: 'X' }],
+    })),
+  ] },
+};
+assert.match(
+  validateSpec(buttonBoard).ok ? '' : validateSpec(buttonBoard).errors.join('\n'),
+  /game grid/,
+);
+
+// Клавиатура калькулятора пишет в одно поле — ложного срабатывания быть не должно.
+const keypad = {
+  ...buttonBoard, id: 'calc', state: { display: '' },
+  ui: { type: 'Screen', children: [
+    { type: 'Stat', label: 'Итого', value: '{{display}}' },
+    ...['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((digit) => ({
+      type: 'Button', title: digit,
+      onPress: [{ action: 'state.set', key: 'display', value: digit }],
+    })),
+  ] },
+};
+assert.ok(validateSpec(keypad).ok, 'клавиатура не должна считаться игрой');
+console.log('Игровое поле из кнопок проверено');
+
 const sys = buildSystemInstruction('ru');
 assert.ok(sys.includes('Russian') && sys.includes('llm.ask') && sys.includes('ProgressRing'));
 
@@ -157,3 +192,35 @@ console.log('Ошибки для цикла починки:');
 bad.errors.forEach((e) => console.log('  •', e));
 console.log(`\nСистемный промпт: ${sys.length} символов.`);
 console.log('Проверки сайта пройдены.');
+
+// Сборка промпта по плану: ради неё и затевалась двухэтапная генерация.
+
+// Проверяем сборку промпта по плану — то, ради чего всё затевалось.
+const gamePrompt = buildSystemInstruction('ru', {
+  kind: 'game', capabilities: ['sandbox'], components: ['Sandbox', 'Stat'],
+  needsRecords: false, needsStructuredAi: false, summary: '', title: '',
+});
+assert.ok(gamePrompt.includes('ONE Sandbox node'), 'у игры должен быть раздел про песочницу');
+assert.ok(!gamePrompt.includes('Photo utilities.'), 'у игры не должно быть раздела про камеру');
+
+const photoPrompt = buildSystemInstruction('ru', {
+  kind: 'ai_tool', capabilities: ['camera', 'llm'], components: ['Image', 'Gallery'],
+  needsRecords: true, needsStructuredAi: true, summary: '', title: '',
+});
+assert.ok(photoPrompt.includes('Photo utilities.'), 'у фото-утилиты должен быть раздел про камеру');
+assert.ok(photoPrompt.includes('"fields"'), 'должен быть раздел про структурный ответ');
+assert.ok(!photoPrompt.includes('ONE Sandbox node'), 'у фото-утилиты не должно быть раздела про игры');
+
+const full = buildSystemInstruction('ru');
+assert.ok(full.length > photoPrompt.length, 'промпт по плану должен быть короче полного');
+
+const withPlan = buildGeneratePrompt('змейка', 'ru', {
+  kind: 'game', capabilities: ['sandbox'], components: ['Sandbox'],
+  needsRecords: false, needsStructuredAi: false, summary: 'игра змейка', title: 'Змейка',
+});
+assert.ok(withPlan.includes('kind: game') && withPlan.includes('Sandbox'));
+
+console.log(`полный промпт: ${full.length}`);
+console.log(`игра:          ${gamePrompt.length} (-${Math.round((1 - gamePrompt.length / full.length) * 100)}%)`);
+console.log(`фото + ИИ:     ${photoPrompt.length} (-${Math.round((1 - photoPrompt.length / full.length) * 100)}%)`);
+console.log('Сборка промпта по плану проверена');

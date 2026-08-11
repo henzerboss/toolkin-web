@@ -1,4 +1,4 @@
-import { callGemini, cors, guard, json, safeJsonParse } from '../_shared';
+import { THINKING, callGemini, cors, guard, json, safeJsonParse } from '../_shared';
 import { languageName } from '../_prompt';
 import { canAfford, charge } from '@/lib/credits';
 import { COST } from '@/lib/pricing';
@@ -86,7 +86,12 @@ export async function POST(req: Request) {
         'Если задача невыполнима по имеющимся данным — верни одну фразу с объяснением.',
       ].join(' ');
 
-  const result = await callGemini(system, prompt, { imageBase64: image, jsonOnly: Boolean(fields) });
+  const result = await callGemini(system, prompt, {
+    imageBase64: image,
+    jsonOnly: Boolean(fields),
+    thinking: THINKING.ask,
+    purpose: 'ask',
+  });
   if (!result.ok) return json({ error: result.error ?? 'model_unavailable' }, 503, headers);
 
   const charged = await charge(account!.appUserId, 'ask', price, { appId: body.appId });

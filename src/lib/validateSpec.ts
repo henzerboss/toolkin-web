@@ -140,7 +140,11 @@ function checkWiring(spec: MiniAppSpec, errors: string[]): void {
   // random() в выражениях нет намеренно: пересчёт derived менял бы результат
   // на каждый рендер. Подсказываем это прямо, иначе модель будет пробовать снова.
   if (/\brandom\s*\(/.test(serialized + JSON.stringify(spec.derived ?? {}))) {
-    errors.push('expressions: there is no random() function. Use the state.random action');
+    errors.push(
+      'expressions: there is no random() function. For a one-off value use the state.random action. ' +
+        'If randomness is needed during play — a computer opponent, a shuffled board — this is a game: ' +
+        'move the whole thing into a Sandbox node with canvas and JS',
+    );
   }
 
   for (const step of named('state.random')) {
@@ -160,11 +164,31 @@ function checkWiring(spec: MiniAppSpec, errors: string[]): void {
  */
 function checkSandbox(spec: MiniAppSpec, errors: string[]): void {
   const sandboxes: string[] = [];
+  const boardCells = new Set<string>();
+
   const walkNode = (node: UiNode): void => {
     if (node.type === 'Sandbox' && typeof node.html === 'string') sandboxes.push(node.html);
+
+    // Признак игрового поля, собранного из кнопок: каждая пишет в свою
+    // отдельную ячейку состояния и больше ничего не делает. У клавиатуры
+    // калькулятора или списка действий все кнопки пишут в одно поле,
+    // поэтому ложных срабатываний не будет.
+    if (node.type === 'Button' && Array.isArray(node.onPress) && node.onPress.length === 1) {
+      const step = node.onPress[0] as unknown as Record<string, unknown>;
+      if (step?.action === 'state.set' && typeof step.key === 'string') boardCells.add(step.key);
+    }
+
     if (Array.isArray(node.children)) node.children.forEach(walkNode);
   };
   walkNode(spec.ui);
+
+  if (boardCells.size >= 6 && sandboxes.length === 0) {
+    errors.push(
+      `A board of ${boardCells.size} Button nodes writing into separate state cells is a game grid. ` +
+        'Build the whole game as one Sandbox node with canvas and JS: a button board cannot have ' +
+        'an opponent, cannot animate and cannot use randomness',
+    );
+  }
 
   if (sandboxes.length > 0 && !spec.capabilities.includes('sandbox')) {
     errors.push('Sandbox: the "sandbox" capability is missing from capabilities');
