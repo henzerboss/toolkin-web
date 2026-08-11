@@ -1,5 +1,6 @@
 import { cors, guard, json } from '../../_shared';
 import { grant, setPremiumUntil } from '@/lib/credits';
+import { SUBSCRIPTION_CREDITS } from '@/lib/pricing';
 
 export const runtime = 'nodejs';
 
@@ -35,10 +36,17 @@ export async function POST(req: Request) {
     await grant(account!.appUserId, credits, 'grant', { source: 'dev' });
   }
 
+  let subscriptionCredits = 0;
   if (body.premiumDays && body.premiumDays > 0) {
     const until = new Date(Date.now() + body.premiumDays * 86_400_000);
     await setPremiumUntil(account!.appUserId, until);
+
+    // В бою квоту подписчика начисляет вебхук RevenueCat. Здесь его нет,
+    // поэтому начисляем сами — иначе после «покупки» в Expo Go подписка
+    // активна, а кредитов нет, и весь сценарий выглядит сломанным.
+    subscriptionCredits = SUBSCRIPTION_CREDITS();
+    await grant(account!.appUserId, subscriptionCredits, 'subscription', { source: 'dev' });
   }
 
-  return json({ ok: true, credits, premiumDays: body.premiumDays ?? 0 }, 200, headers);
+  return json({ ok: true, credits, subscriptionCredits, premiumDays: body.premiumDays ?? 0 }, 200, headers);
 }

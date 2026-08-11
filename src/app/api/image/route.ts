@@ -13,13 +13,23 @@ interface Body {
   aspect?: 'square' | 'portrait' | 'landscape';
 }
 
-const SIZES: Record<string, { width: number; height: number }> = {
-  square: { width: 1024, height: 1024 },
-  portrait: { width: 768, height: 1024 },
-  landscape: { width: 1024, height: 768 },
-};
+/**
+ * Размер задаётся строкой «ШИРИНАxВЫСОТА» — так его ждёт OpenAI-совместимый API.
+ * Базовый берётся из окружения, а соотношение сторон утилита выбирает сама.
+ */
+const BASE_SIZE = process.env.TOOLKIN_DEEPINFRA_IMAGE_SIZE ?? '1024x1024';
+const MODEL = process.env.TOOLKIN_DEEPINFRA_IMAGE_MODEL ?? 'black-forest-labs/FLUX-1-schnell';
+const STEPS = Number.parseInt(process.env.TOOLKIN_DEEPINFRA_IMAGE_STEPS ?? '4', 10);
 
-const MODEL = process.env.TOOLKIN_IMAGE_MODEL ?? 'black-forest-labs/FLUX-1-schnell';
+function sizeFor(aspect: string | undefined): string {
+  const [rawWidth] = BASE_SIZE.split('x');
+  const base = Number.parseInt(rawWidth, 10) || 1024;
+  const short = Math.round((base * 3) / 4 / 64) * 64;
+
+  if (aspect === 'portrait') return `${short}x${base}`;
+  if (aspect === 'landscape') return `${base}x${short}`;
+  return BASE_SIZE;
+}
 
 export async function OPTIONS(req: Request) {
   return new Response(null, { status: 204, headers: cors(req.headers.get('origin') ?? '') });
@@ -57,18 +67,18 @@ export async function POST(req: Request) {
     return json({ error: 'insufficient_credits', credits: account!.credits, price }, 402, headers);
   }
 
-  const size = SIZES[body.aspect ?? 'square'] ?? SIZES.square;
-
   try {
-    const res = await fetch(`https://api.deepinfra.com/v1/inference/${MODEL}`, {
+    // OpenAI-совместимый эндпоинт DeepInfra, а не /v1/inference: у последнего
+    // другой формат тела и ответа, и именно на этом генерация не работала.
+    const res = await fetch('https://api.deepinfra.com/v1/openai/images/generations', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
+        model: MODEL,
         prompt,
-        width: size.width,
-        height: size.height,
-        num_images: 1,
-        num_inference_steps: 4,
+        size: sizeFor(body.aspect),
+        n: 1,
+        num_inference_steps: STEPS,
       }),
     });
 
@@ -77,17 +87,16 @@ export async function POST(req: Request) {
       return json({ error: 'image_provider_failed', detail: detail.slice(0, 300) }, 503, headers);
     }
 
-    const payload = (await res.json()) as { images?: string[] };
-    const image = payload.images?.[0];
-    if (!image) return json({ error: 'empty_response' }, 503, headers);
+    const payload = (await res.json()) as { data?: { b64_json?: string; url?: string }[] };
+    const entry = payload.data?.[0];
+    const base64 = entry?.b64_json;
+    if (!base64 && !entry?.url) return json({ error: 'empty_response' }, 503, headers);
 
     // Списываем только после успеха — как и везде: неудача не должна стоить денег.
     const charged = await charge(account!.appUserId, 'image', price, { appId: body.appId });
 
-    // Провайдер отдаёт готовый data URI; если формат изменится — приводим сами,
-    // чтобы клиенту всегда приходило одно и то же.
-    const dataUri = image.startsWith('data:') ? image : `data:image/png;base64,${image}`;
-    return json({ image: dataUri, credits: charged.credits }, 200, headers);
+    const image = base64 ? `data:image/jpeg;base64,${base64}` : entry!.url!;
+    return json({ image, credits: charged.credits }, 200, headers);
   } catch (error) {
     return json({ error: 'image_provider_failed', detail: String(error).slice(0, 200) }, 503, headers);
   }
