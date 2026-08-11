@@ -120,6 +120,36 @@ remote.ui.children[1].html = '<script src="https://cdn.example.com/x.js"></scrip
 assert.match(validateSpec(remote).ok ? '' : validateSpec(remote).errors.join('\n'), /external scripts/);
 console.log('Песочница проверена');
 
+// Числа из свободного текста и потерянные фото — две ошибки, из-за которых
+// трекер КБЖУ писал в историю нули и не показывал снимки.
+const kbju = {
+  schemaVersion: 1, id: 'kbju', version: 1,
+  manifest: { name: 'КБЖУ', icon: 'camera', color: 'amber', locale: 'ru' },
+  capabilities: ['camera', 'llm'],
+  state: { photo: '', result: '' },
+  records: { fields: [
+    { key: 'photo', label: 'Фото', kind: 'image' },
+    { key: 'kcal', label: 'Ккал', kind: 'number' },
+  ], valueField: 'kcal' },
+  ui: { type: 'Screen', children: [
+    { type: 'Button', title: 'Камера', disabled: 'llmBusy',
+      onPress: [{ action: 'camera.capture', into: 'photo', source: 'camera' }] },
+    { type: 'Button', title: 'Анализ', disabled: 'llmBusy',
+      onPress: [
+        { action: 'llm.ask', prompt: 'Оцени блюдо', image: 'photo', into: 'result' },
+        { action: 'records.add', values: { photo: '{{photo}}', kcal: '{{result}}' } },
+      ] },
+    { type: 'Text', value: '{{result}}' },
+    { type: 'List', valueKey: 'kcal' },
+  ] },
+};
+const kbjuResult = validateSpec(kbju);
+assert.ok(!kbjuResult.ok);
+const kbjuErrors = kbjuResult.errors.join('\n');
+assert.match(kbjuErrors, /free-text llm\.ask/);
+assert.match(kbjuErrors, /nothing displays it/);
+console.log('Числа и фото в истории проверены');
+
 const sys = buildSystemInstruction('ru');
 assert.ok(sys.includes('Russian') && sys.includes('llm.ask') && sys.includes('ProgressRing'));
 

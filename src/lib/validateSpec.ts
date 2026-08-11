@@ -222,9 +222,27 @@ function checkAiWiring(spec: MiniAppSpec, steps: Step[], serialized: string, err
   }
 
   for (const step of asks) {
+    const fields = step.fields && typeof step.fields === 'object' ? (step.fields as Record<string, unknown>) : null;
+
+    if (fields) {
+      // Структурированный ответ: каждое поле обязано существовать в state,
+      // иначе разобранное значение некуда положить.
+      for (const key of Object.keys(fields)) {
+        if (!(key in spec.state)) {
+          errors.push(`llm.ask: fields."${key}" is not declared in state`);
+        }
+      }
+      if (Object.keys(fields).length === 0) {
+        errors.push('llm.ask: fields is empty — either fill it or use into for free text');
+      }
+      continue;
+    }
+
     const into = typeof step.into === 'string' ? step.into : null;
     if (!into) {
-      errors.push('llm.ask: into is missing — there is nowhere to put the answer and credits are wasted');
+      errors.push(
+        'llm.ask: neither into nor fields is set — there is nowhere to put the answer and credits are wasted',
+      );
     } else if (!(into in spec.state)) {
       errors.push(`llm.ask: into="${into}" is not declared in state`);
     } else if (!serialized.includes(`{{${into}`)) {
@@ -247,6 +265,51 @@ function checkAiWiring(spec: MiniAppSpec, steps: Step[], serialized: string, err
     const into = typeof step.into === 'string' ? step.into : null;
     if (!into) errors.push('camera.capture: into is missing — there is nowhere to put the photo');
     else if (!(into in spec.state)) errors.push(`camera.capture: into="${into}" is not declared in state`);
+  }
+
+  // Число в записи, полученное из свободного текста — самая частая причина
+  // нулей в истории: Number("Калории: 650 ккал") даёт NaN.
+  for (const step of steps) {
+    if (step.action !== 'records.add' || !step.values || typeof step.values !== 'object') continue;
+
+    for (const [key, raw] of Object.entries(step.values as Record<string, unknown>)) {
+      const field = spec.records?.fields.find((item) => item.key === key);
+      if (field?.kind !== 'number' || typeof raw !== 'string') continue;
+
+      const source = raw.replace(/[{}\s]/g, '');
+      const filledByPlainAsk = asks.some((ask) => ask.into === source && !ask.fields);
+      if (filledByPlainAsk) {
+        errors.push(
+          `records.add: "${key}" is a number field but gets "${raw}" from a free-text llm.ask. ` +
+            'Use llm.ask with fields so the model returns a number directly',
+        );
+      }
+    }
+  }
+
+  // Снимок, который никто не показывает в истории — ровно то, ради чего
+  // пользователь просил «сохраняй фото».
+  const photoKeys = captures
+    .map((step) => (typeof step.into === 'string' ? step.into : null))
+    .filter((key): key is string => key !== null);
+
+  if (photoKeys.length > 0 && spec.records) {
+    const savesPhoto = steps.some(
+      (step) =>
+        step.action === 'records.add' &&
+        step.values &&
+        Object.values(step.values as Record<string, unknown>).some(
+          (value) => typeof value === 'string' && photoKeys.some((key) => value.includes(key)),
+        ),
+    );
+    const showsPhoto = /"type"\s*:\s*"Gallery"|"imageKey"/.test(serialized);
+
+    if (savesPhoto && !showsPhoto) {
+      errors.push(
+        'records: a photo is saved into history but nothing displays it. ' +
+          'Add { "type": "Gallery", "imageKey": "<field>" } or set imageKey on the List',
+      );
+    }
   }
 
   // Ожидание ответа модели длится секунды. Без блокировки кнопки человек

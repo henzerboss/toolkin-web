@@ -80,7 +80,7 @@ export const ACTIONS: ActionDef[] = [
   { name: 'notify.cancelAll', description: 'cancel every scheduled notification of this utility', requires: 'notifications', params: [] },
   { name: 'camera.capture', description: 'photo from camera (source: camera) or gallery (source: library); the file path goes into `into`', requires: 'camera', params: ['into', 'source'] },
   { name: 'image.generate', description: 'generate a picture from a description; the result goes into `into`; aspect: square | portrait | landscape', requires: 'image', params: ['prompt', 'into', 'aspect'] },
-  { name: 'llm.ask', description: 'model request, spends credits; the answer goes into `into`; image is the state key holding a photo', requires: 'llm', params: ['prompt', 'into', 'image'] },
+  { name: 'llm.ask', description: 'model request, spends credits; image is the state key holding a photo. Either into (free text) or fields (JSON: stateKey -> what to put there) — use fields whenever a number is needed', requires: 'llm', params: ['prompt', 'into', 'fields', 'image'] },
 ];
 
 /** Функции, доступные в выражениях. Всё остальное парсер отвергает. */
