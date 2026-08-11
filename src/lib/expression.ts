@@ -10,7 +10,7 @@ import { FUNCTIONS } from './expressionFunctions';
 
 export class ExpressionError extends Error {
   constructor(message: string, readonly source: string) {
-    super(`${message} — в выражении "${source}"`);
+    super(`${message} — in expression "${source}"`);
     this.name = 'ExpressionError';
   }
 }
@@ -53,7 +53,7 @@ function tokenize(src: string): Token[] {
       let j = i;
       while (j < src.length && /[0-9.]/.test(src[j])) j += 1;
       const value = Number(src.slice(i, j));
-      if (Number.isNaN(value)) throw new ExpressionError(`Некорректное число "${src.slice(i, j)}"`, src);
+      if (Number.isNaN(value)) throw new ExpressionError(`Invalid number "${src.slice(i, j)}"`, src);
       tokens.push({ kind: 'num', value });
       i = j;
       continue;
@@ -61,7 +61,7 @@ function tokenize(src: string): Token[] {
 
     if (ch === '"' || ch === "'") {
       const close = src.indexOf(ch, i + 1);
-      if (close === -1) throw new ExpressionError('Незакрытая строка', src);
+      if (close === -1) throw new ExpressionError('Unterminated string', src);
       tokens.push({ kind: 'str', value: src.slice(i + 1, close) });
       i = close + 1;
       continue;
@@ -76,7 +76,7 @@ function tokenize(src: string): Token[] {
     }
 
     const op = OPERATORS.find((candidate) => src.startsWith(candidate, i));
-    if (!op) throw new ExpressionError(`Недопустимый символ "${ch}"`, src);
+    if (!op) throw new ExpressionError(`Unexpected character "${ch}"`, src);
     tokens.push({ kind: 'op', value: op });
     i += op.length;
   }
@@ -92,7 +92,7 @@ class Parser {
 
   parse(): Node {
     const node = this.expression(0);
-    if (this.peek().kind !== 'end') throw new ExpressionError('Лишние символы в конце', this.src);
+    if (this.peek().kind !== 'end') throw new ExpressionError('Trailing characters after expression', this.src);
     return node;
   }
 
@@ -103,7 +103,7 @@ class Parser {
   private eat(op: string): void {
     const token = this.next();
     if (token.kind !== 'op' || token.value !== op) {
-      throw new ExpressionError(`Ожидался "${op}"`, this.src);
+      throw new ExpressionError(`Expected "${op}"`, this.src);
     }
   }
 
@@ -167,7 +167,7 @@ class Parser {
         }
         this.eat(')');
         if (!FUNCTIONS[token.value]) {
-          throw new ExpressionError(`Неизвестная функция "${token.value}"`, this.src);
+          throw new ExpressionError(`Unknown function "${token.value}"`, this.src);
         }
         return { t: 'call', name: token.value, args };
       }
@@ -181,7 +181,7 @@ class Parser {
       return inner;
     }
 
-    throw new ExpressionError('Неожиданный конец выражения', this.src);
+    throw new ExpressionError('Unexpected end of expression', this.src);
   }
 }
 
@@ -241,7 +241,7 @@ export class ExpressionEvaluator {
 
       case 'call': {
         const fn = FUNCTIONS[node.name];
-        if (!fn) throw new ExpressionError(`Неизвестная функция "${node.name}"`, src);
+        if (!fn) throw new ExpressionError(`Unknown function "${node.name}"`, src);
         return fn(node.args.map((arg) => this.exec(arg, scope, src)));
       }
 
@@ -280,7 +280,7 @@ export class ExpressionEvaluator {
       case '>': return toNumber(left) > toNumber(right);
       case '>=': return toNumber(left) >= toNumber(right);
       default:
-        throw new ExpressionError(`Неизвестный оператор "${node.op}"`, src);
+        throw new ExpressionError(`Unknown operator "${node.op}"`, src);
     }
   }
 }

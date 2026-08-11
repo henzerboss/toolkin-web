@@ -1,4 +1,4 @@
-import { cors, guard, json } from '../_shared';
+import { callGemini, cors, guard, json } from '../_shared';
 import { canAfford, charge } from '@/lib/credits';
 import { COST } from '@/lib/pricing';
 
@@ -29,6 +29,34 @@ function sizeFor(aspect: string | undefined): string {
   if (aspect === 'portrait') return `${short}x${base}`;
   if (aspect === 'landscape') return `${base}x${short}`;
   return BASE_SIZE;
+}
+
+/**
+ * FLUX понимает только английский: на русском или японском он выдаёт
+ * бессмысленный результат вместо ошибки, что хуже отказа. Промпт собирается
+ * моделью на языке пользователя и вдобавок содержит его собственный ввод,
+ * поэтому переводим перед отправкой.
+ *
+ * Латиница пропускается без перевода — это лишний вызов и лишняя задержка
+ * там, где всё уже правильно.
+ */
+async function toEnglish(prompt: string): Promise<string> {
+  if (process.env.TOOLKIN_IMAGE_TRANSLATE === 'false') return prompt;
+  // eslint-disable-next-line no-control-regex
+  if (!/[^\u0000-\u024F]/.test(prompt)) return prompt;
+
+  const result = await callGemini(
+    'Переведи текст на английский как промпт для генератора изображений. ' +
+      'Верни только перевод: без кавычек, пояснений и предисловий. ' +
+      'Сохрани все детали, стиль и перечисления.',
+    prompt,
+    { jsonOnly: false },
+  );
+
+  const translated = (result.text ?? '').trim();
+  // Перевод не удался — отправляем оригинал: плохая картинка лучше, чем
+  // списанные кредиты и пустой экран.
+  return result.ok && translated.length > 1 ? translated : prompt;
 }
 
 export async function OPTIONS(req: Request) {
@@ -68,6 +96,8 @@ export async function POST(req: Request) {
   }
 
   try {
+    const englishPrompt = await toEnglish(prompt);
+
     // OpenAI-совместимый эндпоинт DeepInfra, а не /v1/inference: у последнего
     // другой формат тела и ответа, и именно на этом генерация не работала.
     const res = await fetch('https://api.deepinfra.com/v1/openai/images/generations', {
@@ -75,7 +105,7 @@ export async function POST(req: Request) {
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
         model: MODEL,
-        prompt,
+        prompt: englishPrompt,
         size: sizeFor(body.aspect),
         n: 1,
         num_inference_steps: STEPS,
@@ -96,7 +126,11 @@ export async function POST(req: Request) {
     const charged = await charge(account!.appUserId, 'image', price, { appId: body.appId });
 
     const image = base64 ? `data:image/jpeg;base64,${base64}` : entry!.url!;
-    return json({ image, credits: charged.credits }, 200, headers);
+    return json(
+      { image, credits: charged.credits, prompt: englishPrompt !== prompt ? englishPrompt : undefined },
+      200,
+      headers,
+    );
   } catch (error) {
     return json({ error: 'image_provider_failed', detail: String(error).slice(0, 200) }, 503, headers);
   }

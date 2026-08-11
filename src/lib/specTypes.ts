@@ -40,7 +40,7 @@ export interface UiNode {
 export interface RecordField {
   key: string;
   label: Template;
-  kind: 'number' | 'text' | 'date';
+  kind: 'number' | 'text' | 'date' | 'image';
 }
 
 export interface RecordSchema {

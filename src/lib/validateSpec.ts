@@ -30,7 +30,7 @@ const specSchema = z.object({
   derived: z.record(z.string(), z.string()).optional(),
   records: z
     .object({
-      fields: z.array(z.object({ key: z.string(), label: z.string(), kind: z.enum(['number', 'text', 'date']) })),
+      fields: z.array(z.object({ key: z.string(), label: z.string(), kind: z.enum(['number', 'text', 'date', 'image']) })),
       valueField: z.string().optional(),
     })
     .optional(),
@@ -70,11 +70,11 @@ export function validateSpec(input: unknown): SpecValidation {
   }
 
   for (const key of spec.persist ?? []) {
-    if (!(key in spec.state)) errors.push(`persist: поля "${key}" нет в state — добавь его в state или убери из persist`);
+    if (!(key in spec.state)) errors.push(`persist: field "${key}" is not in state — add it to state or drop it from persist`);
   }
 
   if (spec.records?.valueField && !spec.records.fields.some((f) => f.key === spec.records!.valueField)) {
-    errors.push(`records.valueField: "${spec.records.valueField}" не описан в records.fields`);
+    errors.push(`records.valueField: "${spec.records.valueField}" is not listed in records.fields`);
   }
 
   walk(spec.ui, spec, errors, evaluator, 'ui');
@@ -115,37 +115,37 @@ function checkWiring(spec: MiniAppSpec, errors: string[]): void {
 
   if (usesPrefix('records.') && !spec.records) {
     errors.push(
-      'records: используется экшен records.*, но блок records не объявлен. ' +
-        'Добавь records: { fields: [{key,label,kind}], valueField: "ключ" } — ' +
-        'иначе записи не сохранятся, а recordValues всегда будет пустым',
+      'records: a records.* action is used but the records block is missing. ' +
+        'Add records: { fields: [{key,label,kind}], valueField: "key" } — ' +
+        'otherwise entries are not saved and recordValues stays empty',
     );
   }
   if (spec.records && !spec.records.valueField) {
-    errors.push('records.valueField: не задан — recordValues будет пустым, график и sum() дадут ноль');
+    errors.push('records.valueField: missing — recordValues stays empty and charts and sum() return zero');
   }
 
   for (const step of named('timer.start')) {
     if (step.seconds === undefined) {
-      errors.push('timer.start: не указан seconds — отсчёт превратится в секундомер и покажет 00:00');
+      errors.push('timer.start: seconds is missing — the countdown becomes a stopwatch and shows 00:00');
     }
   }
 
   if (usesPrefix('timer.') && !/timerRemaining|timerElapsed|timerRunning|timerFinished/.test(serialized)) {
     errors.push(
-      'timer: таймер запускается, но ни один блок не показывает timerRemaining, ' +
-        'timerElapsed, timerRunning или timerFinished — пользователь не увидит отсчёта',
+      'timer: the timer starts but no block shows timerRemaining, timerElapsed, ' +
+        'timerRunning or timerFinished — the countdown stays invisible',
     );
   }
 
   // random() в выражениях нет намеренно: пересчёт derived менял бы результат
   // на каждый рендер. Подсказываем это прямо, иначе модель будет пробовать снова.
   if (/\brandom\s*\(/.test(serialized + JSON.stringify(spec.derived ?? {}))) {
-    errors.push('выражения: функции random() не существует. Используй экшен state.random');
+    errors.push('expressions: there is no random() function. Use the state.random action');
   }
 
   for (const step of named('state.random')) {
     const key = typeof step.key === 'string' ? step.key : null;
-    if (key && !(key in spec.state)) errors.push(`state.random: ключа "${key}" нет в state`);
+    if (key && !(key in spec.state)) errors.push(`state.random: key "${key}" is not in state`);
   }
 
   checkAiWiring(spec, steps, serialized, errors);
@@ -164,59 +164,59 @@ function checkAiWiring(spec: MiniAppSpec, steps: Step[], serialized: string, err
   for (const step of images) {
     const into = typeof step.into === 'string' ? step.into : null;
     if (!into) {
-      errors.push('image.generate: не указан into — картинку некуда положить, кредиты спишутся впустую');
+      errors.push('image.generate: into is missing — there is nowhere to put the picture and credits are wasted');
     } else if (!(into in spec.state)) {
-      errors.push(`image.generate: into="${into}" не объявлен в state`);
+      errors.push(`image.generate: into="${into}" is not declared in state`);
     } else if (!new RegExp(`"source"\\s*:\\s*"${into}"`).test(serialized)) {
       errors.push(
-        `image.generate: результат кладётся в "${into}", но его никто не показывает. ` +
-          `Добавь { "type": "Image", "source": "${into}" }`,
+        `image.generate: the result goes into "${into}" but nothing displays it. ` +
+          `Add { "type": "Image", "source": "${into}" }`,
       );
     }
-    if (step.prompt === undefined) errors.push('image.generate: не указан prompt');
+    if (step.prompt === undefined) errors.push('image.generate: prompt is missing');
   }
 
   if (images.length > 0 && !/llmBusy/.test(serialized)) {
     errors.push(
-      'image.generate: нигде не используется llmBusy. Заблокируй кнопку через "disabled": "llmBusy", ' +
-        'иначе пользователь нажмёт повторно и заплатит дважды',
+      'image.generate: llmBusy is never used. Disable the button with "disabled": "llmBusy", ' +
+        'otherwise people tap twice and pay twice',
     );
   }
 
   for (const step of asks) {
     const into = typeof step.into === 'string' ? step.into : null;
     if (!into) {
-      errors.push('llm.ask: не указан into — ответ модели некуда положить, кредиты спишутся впустую');
+      errors.push('llm.ask: into is missing — there is nowhere to put the answer and credits are wasted');
     } else if (!(into in spec.state)) {
-      errors.push(`llm.ask: into="${into}" не объявлен в state`);
+      errors.push(`llm.ask: into="${into}" is not declared in state`);
     } else if (!serialized.includes(`{{${into}`)) {
       errors.push(
-        `llm.ask: результат кладётся в "${into}", но ни один блок его не показывает. ` +
-          `Добавь { "type": "Text", "value": "{{${into}}}", "visible": "${into} != ''" }`,
+        `llm.ask: the answer goes into "${into}" but no block displays it. ` +
+          `Add { "type": "Text", "value": "{{${into}}}", "visible": "${into} != ''" }`,
       );
     }
 
     if (step.image !== undefined) {
       const key = String(step.image).replace(/[{}\s]/g, '');
-      if (!(key in spec.state)) errors.push(`llm.ask: image="${String(step.image)}" не объявлен в state`);
+      if (!(key in spec.state)) errors.push(`llm.ask: image="${String(step.image)}" is not declared in state`);
       if (captures.length === 0) {
-        errors.push('llm.ask: указан image, но снимок нечем сделать — добавь экшен camera.capture');
+        errors.push('llm.ask: image is set but nothing takes the photo — add a camera.capture action');
       }
     }
   }
 
   for (const step of captures) {
     const into = typeof step.into === 'string' ? step.into : null;
-    if (!into) errors.push('camera.capture: не указан into — снимок некуда положить');
-    else if (!(into in spec.state)) errors.push(`camera.capture: into="${into}" не объявлен в state`);
+    if (!into) errors.push('camera.capture: into is missing — there is nowhere to put the photo');
+    else if (!(into in spec.state)) errors.push(`camera.capture: into="${into}" is not declared in state`);
   }
 
   // Ожидание ответа модели длится секунды. Без блокировки кнопки человек
   // нажмёт её повторно и заплатит дважды за один результат.
   if (asks.length > 0 && !/llmBusy/.test(serialized)) {
     errors.push(
-      'llm.ask: нигде не используется llmBusy. Заблокируй кнопку через "disabled": "llmBusy" ' +
-        'и покажи ожидание, иначе пользователь нажмёт повторно и потратит кредиты дважды',
+      'llm.ask: llmBusy is never used. Disable the button with "disabled": "llmBusy" ' +
+        'and show a waiting state, otherwise people tap twice and pay twice',
     );
   }
 }
@@ -230,21 +230,21 @@ function walk(
 ): void {
   const def = componentByType.get(node.type);
   if (!def) {
-    errors.push(`${path}: компонента "${node.type}" не существует. Доступны: ${COMPONENT_TYPES.join(', ')}`);
+    errors.push(`${path}: component "${node.type}" does not exist. Available: ${COMPONENT_TYPES.join(', ')}`);
     return;
   }
 
   for (const prop of def.required ?? []) {
-    if (node[prop] === undefined) errors.push(`${path} (${node.type}): обязательное свойство "${prop}" отсутствует`);
+    if (node[prop] === undefined) errors.push(`${path} (${node.type}): required property "${prop}" is missing`);
   }
 
   if (def.binds) {
     if (typeof node.bind !== 'string') {
-      errors.push(`${path} (${node.type}): нужен bind — имя ключа из state`);
+      errors.push(`${path} (${node.type}): bind is required — the name of a state key`);
     } else if (!(node.bind in spec.state)) {
       errors.push(
-        `${path} (${node.type}): bind="${node.bind}" не объявлен в state. ` +
-          `Есть: ${Object.keys(spec.state).join(', ') || '(пусто)'}`,
+        `${path} (${node.type}): bind="${node.bind}" is not declared in state. ` +
+          `Available: ${Object.keys(spec.state).join(', ') || '(none)'}`,
       );
     }
   }
@@ -254,15 +254,15 @@ function walk(
     const values = (node.options as { value?: unknown }[]).map((o) => o?.value);
     if (typeof node.bind === 'string' && !values.includes(current)) {
       errors.push(
-        `${path} (Select): начальное значение state.${node.bind} = ${JSON.stringify(current)} ` +
-          `не совпадает ни с одним options.value (${values.map((v) => JSON.stringify(v)).join(', ')})`,
+        `${path} (Select): initial value state.${node.bind} = ${JSON.stringify(current)} ` +
+          `matches none of options.value (${values.map((v) => JSON.stringify(v)).join(', ')})`,
       );
     }
   }
 
   if (node.onPress !== undefined) {
     if (!Array.isArray(node.onPress)) {
-      errors.push(`${path} (${node.type}): onPress должен быть массивом экшенов`);
+      errors.push(`${path} (${node.type}): onPress must be an array of actions`);
     } else {
       node.onPress.forEach((raw, index) =>
         checkStep(raw as Record<string, unknown>, spec, errors, `${path}.onPress[${index}]`),
@@ -288,25 +288,25 @@ function walk(
 function checkStep(step: Record<string, unknown>, spec: MiniAppSpec, errors: string[], path: string): void {
   const name = typeof step?.action === 'string' ? step.action : null;
   if (!name) {
-    errors.push(`${path}: у шага нет поля action`);
+    errors.push(`${path}: the step has no action field`);
     return;
   }
 
   const def = actionByName.get(name);
   if (!def) {
-    errors.push(`${path}: экшена "${name}" не существует. Доступны: ${ACTION_NAMES.join(', ')}`);
+    errors.push(`${path}: action "${name}" does not exist. Available: ${ACTION_NAMES.join(', ')}`);
     return;
   }
 
   if (def.requires && !spec.capabilities.includes(def.requires)) {
     errors.push(
-      `${path}: экшен "${name}" требует capability "${def.requires}" — ` +
-        `добавь её в capabilities, иначе шаг не выполнится`,
+      `${path}: action "${name}" requires capability "${def.requires}" — ` +
+        `add it to capabilities or the step will not run`,
     );
   }
 
   if (name.startsWith('state.') && typeof step.key === 'string' && !(step.key in spec.state)) {
-    errors.push(`${path}: ключа "${step.key}" нет в state`);
+    errors.push(`${path}: key "${step.key}" is not in state`);
   }
 }
 

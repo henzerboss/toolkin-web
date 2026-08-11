@@ -28,10 +28,10 @@ assert.ok(!bad.ok);
 // Проверяем смысл ошибок, а не их количество: счётчик ломается от любой
 // правки теста и ничего не говорит о качестве подсказок для модели.
 const joined = bad.errors.join('\n');
-assert.match(joined, /компонента "Ghost" не существует/);
-assert.match(joined, /bind="nope" не объявлен в state/);
-assert.match(joined, /требует capability "clipboard"/);
-assert.match(joined, /экшена "fly" не существует/);
+assert.match(joined, /component "Ghost" does not exist/);
+assert.match(joined, /bind="nope" is not declared in state/);
+assert.match(joined, /requires capability "clipboard"/);
+assert.match(joined, /action "fly" does not exist/);
 
 // Пакеты кредитов читаются из переменной окружения, а не из кода.
 process.env.TOOLKIN_CREDIT_PACKS = 'credits_100:100,credits_500:550';
@@ -48,20 +48,20 @@ const wiring: [string, unknown, RegExp][] = [
     ui: { type: 'Screen', children: [
       { type: 'Button', title: 'x', onPress: [{ action: 'records.add', values: { amount: 1 } }] },
     ] },
-  }, /блок records не объявлен/],
+  }, /records block is missing/],
   ['timer.start без seconds', {
     ...DEMO_SPECS[0],
     ui: { type: 'Screen', children: [
       { type: 'Text', value: '{{timerRemaining | duration}}' },
       { type: 'Button', title: 'x', onPress: [{ action: 'timer.start' }] },
     ] },
-  }, /не указан seconds/],
+  }, /seconds is missing/],
   ['таймер без отображения', {
     ...DEMO_SPECS[0],
     ui: { type: 'Screen', children: [
       { type: 'Button', title: 'x', onPress: [{ action: 'timer.start', seconds: 60 }] },
     ] },
-  }, /не увидит отсчёта/],
+  }, /countdown stays invisible/],
 ];
 
 for (const [name, spec, pattern] of wiring) {
