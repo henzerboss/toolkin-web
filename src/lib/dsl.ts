@@ -49,6 +49,8 @@ export const COMPONENTS: ComponentDef[] = [
   { type: 'Select', description: 'сегментированный выбор; bind, label, options: [{value,label}]', binds: true, required: ['options'] },
   { type: 'Button', description: 'кнопка; title, variant: primary | secondary, onPress — массив экшенов', required: ['title'] },
   { type: 'Image', description: 'показать картинку из поля состояния (снимок или сгенерированную); source — имя ключа, ratio: square | portrait | landscape', required: ['source'] },
+  { type: 'DateField', description: 'выбор даты или времени; bind хранит timestamp в мс, mode: date | time', binds: true },
+  { type: 'Table', description: 'таблица по истории записей; columns: [{key,label}] — по одному на поле records', required: ['columns'] },
   { type: 'List', description: 'история записей; valueKey, suffix, limit, empty', required: [] },
 ];
 
@@ -68,7 +70,9 @@ export const ACTIONS: ActionDef[] = [
   { name: 'share', description: 'системный шеринг', requires: 'share', params: ['value'] },
   { name: 'haptics', description: 'вибро-отклик; kind: light | medium | success | warning | error', requires: 'haptics', params: ['kind'] },
   { name: 'toast', description: 'короткое сообщение', requires: null, params: ['text'] },
-  { name: 'notify.schedule', description: 'локальное уведомление', requires: 'notifications', params: ['title', 'body', 'afterSeconds'] },
+  { name: 'notify.schedule', description: 'уведомление через N секунд', requires: 'notifications', params: ['title', 'body', 'afterSeconds'] },
+  { name: 'notify.at', description: 'уведомление на дату (timestamp в мс); repeat: none | daily | yearly — для дней рождений', requires: 'notifications', params: ['title', 'body', 'at', 'repeat'] },
+  { name: 'notify.cancelAll', description: 'отменить все запланированные уведомления утилиты', requires: 'notifications', params: [] },
   { name: 'camera.capture', description: 'снимок с камеры (source: camera) или из галереи (source: library); base64 кладётся в into', requires: 'camera', params: ['into', 'source'] },
   { name: 'image.generate', description: 'сгенерировать картинку по описанию; результат (data URI) кладётся в into; aspect: square | portrait | landscape', requires: 'image', params: ['prompt', 'into', 'aspect'] },
   { name: 'llm.ask', description: 'запрос к модели, тратит кредиты; ответ кладётся в into; image — поле state со снимком', requires: 'llm', params: ['prompt', 'into', 'image'] },

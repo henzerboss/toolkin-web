@@ -64,6 +64,11 @@ export async function GET(req: Request) {
 
   const working = probes.filter((probe) => probe.ok).map((probe) => probe.model);
 
+  // Генератор картинок проверяется настоящим вызовом с минимальным промптом:
+  // это единственный способ отличить «ключ не задан» от «модель недоступна»
+  // и от «поменялся формат ответа».
+  const image = await probeImage();
+
   return json(
     {
       ok: working.length > 0,
@@ -74,10 +79,43 @@ export async function GET(req: Request) {
       availableCount: available.length,
       // Подсказка, чем заменить, если ни одна из настроенных не отвечает.
       suggestions: available.filter((name) => /flash|pro/.test(name)).slice(0, 12),
+      image,
       database: Boolean(process.env.DATABASE_URL),
       clientTokenSet: Boolean(process.env.TOOLKIN_CLIENT_TOKEN),
     },
     working.length > 0 ? 200 : 503,
     headers,
   );
+}
+
+async function probeImage(): Promise<Record<string, unknown>> {
+  const key = process.env.TOOLKIN_DEEPINFRA_API_KEY;
+  if (!key) return { ok: false, reason: 'TOOLKIN_DEEPINFRA_API_KEY не задан' };
+
+  const model = process.env.TOOLKIN_DEEPINFRA_IMAGE_MODEL ?? 'black-forest-labs/FLUX-1-schnell';
+  const size = process.env.TOOLKIN_DEEPINFRA_IMAGE_SIZE ?? '1024x1024';
+
+  try {
+    const res = await fetch('https://api.deepinfra.com/v1/openai/images/generations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+      body: JSON.stringify({ model, prompt: 'a red circle on white background', size, n: 1 }),
+    });
+
+    const text = await res.text();
+    if (!res.ok) return { ok: false, model, status: res.status, detail: text.slice(0, 400) };
+
+    const payload = JSON.parse(text) as { data?: { b64_json?: string; url?: string }[] };
+    const entry = payload.data?.[0];
+    return {
+      ok: Boolean(entry?.b64_json || entry?.url),
+      model,
+      size,
+      // Длина base64 подтверждает, что пришла картинка, а не заглушка.
+      bytes: entry?.b64_json ? Math.round((entry.b64_json.length * 3) / 4) : 0,
+      shape: entry ? Object.keys(entry) : Object.keys(payload),
+    };
+  } catch (error) {
+    return { ok: false, model, detail: String(error).slice(0, 300) };
+  }
 }
