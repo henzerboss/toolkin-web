@@ -1,5 +1,6 @@
 import assert from 'node:assert';
 import { validateSpec } from './src/lib/validateSpec';
+import { cacheKey } from './src/lib/specCacheKey';
 import { buildGeneratePrompt, buildSystemInstruction } from './src/app/api/_prompt';
 import { creditsForProduct } from './src/lib/pricing';
 import { DEMO_SPECS } from './src/lib/exampleSpecs';
@@ -224,3 +225,14 @@ console.log(`полный промпт: ${full.length}`);
 console.log(`игра:          ${gamePrompt.length} (-${Math.round((1 - gamePrompt.length / full.length) * 100)}%)`);
 console.log(`фото + ИИ:     ${photoPrompt.length} (-${Math.round((1 - photoPrompt.length / full.length) * 100)}%)`);
 console.log('Сборка промпта по плану проверена');
+
+// Кэш спек: нормализация запроса решает, платим ли мы Gemini дважды
+// за «Таймер для яиц» и «таймер для яиц.».
+assert.strictEqual(
+  cacheKey('Таймер для яиц', 'ru'),
+  cacheKey('  таймер   для яиц.  ', 'ru'),
+  'регистр, пробелы и точка не должны менять ключ',
+);
+assert.notStrictEqual(cacheKey('таймер для яиц', 'ru'), cacheKey('таймер для яиц', 'en'));
+assert.notStrictEqual(cacheKey('таймер', 'ru'), cacheKey('секундомер', 'ru'));
+console.log('Кэш спек проверен');

@@ -146,8 +146,17 @@ const PLAYBOOK: Record<string, string[]> = {
     'The html must be fully self-contained: no external scripts, no fetch, no CDN links —',
     'the sandbox has no network. Use the CSS variables --bg, --surface, --text, --accent',
     'so the game matches the app theme. Handle touch, not mouse: touchstart and touchmove.',
-    'Two bridges are available inside: toolkin.save({score: 12}) appends an entry to the',
-    'record history, toolkin.set("best", 12) writes a state key.',
+    'Bridges available inside (all return promises):',
+    '  toolkin.save({score: 12})        append an entry to the record history',
+    '  toolkin.set("best", 12)          write a state key',
+    '  toolkin.get("best")              read a state key or derived value',
+    '  toolkin.ask(prompt, fields)      ask the model, spends credits, needs the llm capability',
+    '  toolkin.capture("camera")        take a photo, needs the camera capability',
+    '  toolkin.image(prompt, "square")  generate a picture, needs the image capability',
+    '  toolkin.notify(title, body, sec) local notification, needs notifications',
+    '  toolkin.locale                   device locale string',
+    'Declare the capability in the spec for every bridge you use — the same permission',
+    'check applies inside the sandbox as outside it.',
     'Feasible: snake, breakout, pong, air hockey, tetris, 2048, minesweeper, memory, simon,',
     'sliding puzzle, tic-tac-toe with an opponent, connect four, sokoban, flappy, solitaire.',
     'Not feasible: online multiplayer, sprite or audio files, heavy 3D. Keep html under 60000 chars.',
@@ -280,18 +289,35 @@ export function buildGeneratePrompt(prompt: string, locale: string, plan?: Promp
   return lines.join('\n');
 }
 
-export function buildRefinePrompt(spec: MiniAppSpec, instruction: string): string {
-  return [
-    'Current spec of the utility:',
-    JSON.stringify(spec),
-    '',
+export function buildRefinePrompt(
+  spec: MiniAppSpec,
+  instruction: string,
+  runtimeErrors: string[] = [],
+): string {
+  const lines = ['Current spec of the utility:', JSON.stringify(spec), ''];
+
+  if (runtimeErrors.length > 0) {
+    // Журнал ошибок идёт перед просьбой пользователя: он объясняет, что
+    // именно сломано, тогда как человек обычно пишет только «не работает».
+    lines.push(
+      'These errors happened while the utility was running. They are the actual bug —',
+      'fix them even if the user did not mention them:',
+      ...runtimeErrors.map((error) => `  - ${error}`),
+      '',
+    );
+  }
+
+  lines.push(
     `What to change: "${instruction.slice(0, 600)}"`,
     'Return the FULL updated spec, keeping the same id and incrementing version by 1.',
-    'Do not rewrite what was not asked about: keep state key names and blocks that already work.',
+    'Change as little as possible: keep state key names, keep blocks that already work,',
+    'keep labels the user has not complained about. A rewrite loses what was already right.',
     'If the utility is a game and is currently built from Button nodes, rebuild it as a Sandbox:',
     'a board of buttons cannot have an opponent or animation.',
     'Return JSON only.',
-  ].join('\n');
+  );
+
+  return lines.join('\n');
 }
 
 /**

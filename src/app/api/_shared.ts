@@ -126,11 +126,19 @@ export async function guard(req: Request, options: { requireAccount?: boolean } 
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+export interface GeminiUsage {
+  input: number;
+  output: number;
+  thoughts: number;
+}
+
 export interface GeminiResult {
   ok: boolean;
   text?: string;
   error?: string;
   model?: string;
+  /** Фактический расход. Без него стоимость генерации остаётся догадкой. */
+  usage?: GeminiUsage;
 }
 
 type GeminiPart = { text: string } | { inlineData: { mimeType: string; data: string } };
@@ -170,9 +178,21 @@ async function callOnce(
     return { ok: false, error: detail || `gemini_${res.status}` };
   }
 
-  const body: { candidates?: { content?: { parts?: { text?: string }[] } }[] } = await res.json();
+  const body: {
+    candidates?: { content?: { parts?: { text?: string }[] } }[];
+    usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number };
+  } = await res.json();
+
   const text = body?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-  return text ? { ok: true, text, model } : { ok: false, error: 'empty_response' };
+  const usage: GeminiUsage = {
+    input: body.usageMetadata?.promptTokenCount ?? 0,
+    output: body.usageMetadata?.candidatesTokenCount ?? 0,
+    // Токены размышления оплачиваются как выходные и составляют заметную долю
+    // при thinkingLevel=high — без отдельного учёта счёт выглядит необъяснимым.
+    thoughts: body.usageMetadata?.thoughtsTokenCount ?? 0,
+  };
+
+  return text ? { ok: true, text, model, usage } : { ok: false, error: 'empty_response' };
 }
 
 export async function callGemini(

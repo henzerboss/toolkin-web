@@ -11,6 +11,8 @@ interface Body {
   spec?: unknown;
   instruction?: string;
   locale?: string;
+  /** Что сломалось во время работы утилиты — журнал ошибок рантайма. */
+  runtimeErrors?: string[];
 }
 
 export async function OPTIONS(req: Request) {
@@ -44,9 +46,16 @@ export async function POST(req: Request) {
     return json({ error: 'insufficient_credits', credits: account!.credits, price }, 402, headers);
   }
 
+  // Ошибки рантайма — то, чего модели не хватало больше всего. Раньше она
+  // получала спеку и фразу «не работает», и чинила вслепую; теперь видит,
+  // какой именно экшен упал и с каким текстом.
+  const runtimeErrors = Array.isArray(body.runtimeErrors)
+    ? body.runtimeErrors.filter((item) => typeof item === 'string').slice(0, 10)
+    : [];
+
   const result = await generateSpec(
     buildSystemInstruction(locale),
-    buildRefinePrompt(current.spec, instruction),
+    buildRefinePrompt(current.spec, instruction, runtimeErrors),
     THINKING.refine,
     'refine',
   );

@@ -49,7 +49,14 @@ export async function POST(req: Request) {
     );
   }
 
-  const charged = await charge(account!.appUserId, 'generate', price, { attempts: result.attempts });
+  // Расход пишется в журнал: без него себестоимость генерации остаётся
+  // догадкой, а понять, окупается ли старшая модель, нельзя.
+  const charged = await charge(account!.appUserId, 'generate', price, {
+    attempts: result.attempts,
+    kind: result.plan?.kind,
+    cached: result.cached ?? false,
+    tokens: result.usage,
+  });
 
   return json(
     {
