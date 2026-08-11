@@ -14,6 +14,9 @@ export const COST = {
   generate: () => intEnv('TOOLKIN_COST_GENERATE', 5),
   refine: () => intEnv('TOOLKIN_COST_REFINE', 2),
   ask: () => intEnv('TOOLKIN_COST_ASK', 1),
+  // Дороже текстового вызова, но дешевле генерации утилиты: FLUX-schnell
+  // стоит около цента за кадр, и запас нужен на случай смены провайдера.
+  image: () => intEnv('TOOLKIN_COST_IMAGE', 3),
 };
 
 /** Бесплатные генерации выдаются один раз, а не ежемесячно: их задача — довести до «работает». */

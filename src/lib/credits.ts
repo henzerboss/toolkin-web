@@ -9,7 +9,7 @@ import { WELCOME_CREDITS } from '@/lib/pricing';
  */
 
 export type CreditReason =
-  | 'generate' | 'refine' | 'ask'
+  | 'generate' | 'refine' | 'ask' | 'image'
   | 'welcome' | 'purchase' | 'subscription' | 'grant' | 'refund';
 
 export interface Account {

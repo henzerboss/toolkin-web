@@ -23,7 +23,8 @@ export type Capability =
   | 'location'
   | 'files'
   | 'network'
-  | 'llm';
+  | 'llm'
+  | 'image';
 
 export interface ActionStep {
   action: string;

@@ -29,6 +29,7 @@ export async function GET(req: Request) {
         generate: COST.generate(),
         refine: COST.refine(),
         ask: COST.ask(),
+        image: COST.image(),
       },
     },
     200,

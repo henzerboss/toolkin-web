@@ -29,7 +29,7 @@ export interface ActionDef {
 
 export const CAPABILITIES = [
   'clipboard', 'haptics', 'share', 'notifications',
-  'camera', 'scanner', 'sensors', 'location', 'files', 'network', 'llm',
+  'camera', 'scanner', 'sensors', 'location', 'files', 'network', 'llm', 'image',
 ] as const;
 
 export type Capability = (typeof CAPABILITIES)[number];
@@ -48,6 +48,7 @@ export const COMPONENTS: ComponentDef[] = [
   { type: 'Toggle', description: 'переключатель; bind, label', binds: true },
   { type: 'Select', description: 'сегментированный выбор; bind, label, options: [{value,label}]', binds: true, required: ['options'] },
   { type: 'Button', description: 'кнопка; title, variant: primary | secondary, onPress — массив экшенов', required: ['title'] },
+  { type: 'Image', description: 'показать картинку из поля состояния (снимок или сгенерированную); source — имя ключа, ratio: square | portrait | landscape', required: ['source'] },
   { type: 'List', description: 'история записей; valueKey, suffix, limit, empty', required: [] },
 ];
 
@@ -69,6 +70,7 @@ export const ACTIONS: ActionDef[] = [
   { name: 'toast', description: 'короткое сообщение', requires: null, params: ['text'] },
   { name: 'notify.schedule', description: 'локальное уведомление', requires: 'notifications', params: ['title', 'body', 'afterSeconds'] },
   { name: 'camera.capture', description: 'снимок с камеры (source: camera) или из галереи (source: library); base64 кладётся в into', requires: 'camera', params: ['into', 'source'] },
+  { name: 'image.generate', description: 'сгенерировать картинку по описанию; результат (data URI) кладётся в into; aspect: square | portrait | landscape', requires: 'image', params: ['prompt', 'into', 'aspect'] },
   { name: 'llm.ask', description: 'запрос к модели, тратит кредиты; ответ кладётся в into; image — поле state со снимком', requires: 'llm', params: ['prompt', 'into', 'image'] },
 ];
 

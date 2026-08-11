@@ -159,6 +159,29 @@ function checkWiring(spec: MiniAppSpec, errors: string[]): void {
 function checkAiWiring(spec: MiniAppSpec, steps: Step[], serialized: string, errors: string[]): void {
   const asks = steps.filter((step) => step.action === 'llm.ask');
   const captures = steps.filter((step) => step.action === 'camera.capture');
+  const images = steps.filter((step) => step.action === 'image.generate');
+
+  for (const step of images) {
+    const into = typeof step.into === 'string' ? step.into : null;
+    if (!into) {
+      errors.push('image.generate: не указан into — картинку некуда положить, кредиты спишутся впустую');
+    } else if (!(into in spec.state)) {
+      errors.push(`image.generate: into="${into}" не объявлен в state`);
+    } else if (!new RegExp(`"source"\\s*:\\s*"${into}"`).test(serialized)) {
+      errors.push(
+        `image.generate: результат кладётся в "${into}", но его никто не показывает. ` +
+          `Добавь { "type": "Image", "source": "${into}" }`,
+      );
+    }
+    if (step.prompt === undefined) errors.push('image.generate: не указан prompt');
+  }
+
+  if (images.length > 0 && !/llmBusy/.test(serialized)) {
+    errors.push(
+      'image.generate: нигде не используется llmBusy. Заблокируй кнопку через "disabled": "llmBusy", ' +
+        'иначе пользователь нажмёт повторно и заплатит дважды',
+    );
+  }
 
   for (const step of asks) {
     const into = typeof step.into === 'string' ? step.into : null;
