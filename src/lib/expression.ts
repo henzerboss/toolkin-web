@@ -28,9 +28,10 @@ type Node =
   | { t: 'unary'; op: string; arg: Node }
   | { t: 'binary'; op: string; left: Node; right: Node }
   | { t: 'ternary'; cond: Node; yes: Node; no: Node }
-  | { t: 'call'; name: string; args: Node[] };
+  | { t: 'call'; name: string; args: Node[] }
+  | { t: 'array'; items: Node[] };
 
-const OPERATORS = ['<=', '>=', '==', '!=', '&&', '||', '+', '-', '*', '/', '%', '<', '>', '(', ')', ',', '?', ':', '!'];
+const OPERATORS = ['<=', '>=', '==', '!=', '&&', '||', '+', '-', '*', '/', '%', '<', '>', '(', ')', '[', ']', ',', '?', ':', '!'];
 
 /** Приоритеты бинарных операторов. Выше — сильнее связывает. */
 const BINDING: Record<string, number> = {
@@ -181,6 +182,18 @@ class Parser {
       return inner;
     }
 
+    // Литерал массива. Без него нельзя перечислить дни цикла, приёмы лекарства
+    // или дни тренировок — а именно это нужно календарям и расписаниям.
+    if (token.kind === 'op' && token.value === '[') {
+      const items: Node[] = [];
+      if (!this.isOp(']')) {
+        items.push(this.expression(0));
+        while (this.isOp(',')) { this.next(); items.push(this.expression(0)); }
+      }
+      this.eat(']');
+      return { t: 'array', items };
+    }
+
     throw new ExpressionError('Unexpected end of expression', this.src);
   }
 }
@@ -244,6 +257,9 @@ export class ExpressionEvaluator {
         if (!fn) throw new ExpressionError(`Unknown function "${node.name}"`, src);
         return fn(node.args.map((arg) => this.exec(arg, scope, src)));
       }
+
+      case 'array':
+        return node.items.map((item) => this.exec(item, scope, src));
 
       case 'binary':
         return this.binary(node, scope, src);

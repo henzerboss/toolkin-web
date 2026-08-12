@@ -55,6 +55,20 @@ export const FUNCTIONS: Record<string, Fn> = {
   lower: (a) => String(a[0] ?? '').toLowerCase(),
 
   now: () => Date.now(),
+
+  range: (a) => {
+    const start = num(a[0]);
+    const count = Math.max(0, Math.min(400, Math.round(num(a[1]))));
+    const step = a[2] === undefined ? 1 : num(a[2]);
+    return Array.from({ length: count }, (_, index) => start + index * step);
+  },
+
+  addDays: (a) => num(a[0]) + Math.round(num(a[1])) * DAY_MS,
+  startOfDay: (a) => {
+    const date = new Date(num(a[0]));
+    date.setHours(0, 0, 0, 0);
+    return date.getTime();
+  },
   /** Целых дней между двумя timestamp. Положительное — второй позже первого. */
   daysBetween: (a) => Math.floor((num(a[1]) - num(a[0])) / DAY_MS),
   /** Компоненты длительности в секундах — для таймеров. */

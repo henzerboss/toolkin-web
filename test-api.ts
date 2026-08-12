@@ -1,6 +1,6 @@
 import assert from 'node:assert';
 import { validateSpec } from './src/lib/validateSpec';
-import { cacheKey } from './src/lib/specCacheKey';
+import { PIPELINE_VERSION, cacheKey } from './src/lib/specCacheKey';
 import { buildGeneratePrompt, buildSystemInstruction } from './src/app/api/_prompt';
 import { creditsForProduct } from './src/lib/pricing';
 import { DEMO_SPECS } from './src/lib/exampleSpecs';
@@ -235,4 +235,34 @@ assert.strictEqual(
 );
 assert.notStrictEqual(cacheKey('таймер для яиц', 'ru'), cacheKey('таймер для яиц', 'en'));
 assert.notStrictEqual(cacheKey('таймер', 'ru'), cacheKey('секундомер', 'ru'));
-console.log('Кэш спек проверен');
+// Отпечаток обязан меняться вместе с манифестом: иначе кэш переживёт
+// правку DSL и будет отдавать спеки, собранные по старым правилам.
+assert.match(PIPELINE_VERSION, /^v\d+-[0-9a-f]{12}$/, 'версия должна включать отпечаток манифеста');
+console.log(`Кэш спек проверен, версия конвейера ${PIPELINE_VERSION}`);
+
+// Женский календарь — тот самый случай, который спека раньше не позволяла
+// собрать: овуляция и фертильное окно вычисляются, а не лежат в записях.
+const cycleCalendar = {
+  schemaVersion: 1, id: 'cycle', version: 1,
+  manifest: { name: 'Женский календарь', icon: 'calendar-heart', color: 'rose', locale: 'ru' },
+  capabilities: [],
+  state: { lastPeriod: 0, cycleLength: 28, periodLength: 5, selectedDate: 0 },
+  persist: ['lastPeriod', 'cycleLength'],
+  derived: {
+    ovulation: 'addDays(lastPeriod, cycleLength - 14)',
+    periodDays: 'range(lastPeriod, periodLength, 86400000)',
+    fertileDays: 'range(addDays(ovulation, -4), 6, 86400000)',
+    daysToNext: 'max(daysBetween(nowMs, addDays(lastPeriod, cycleLength)), 0)',
+  },
+  ui: { type: 'Screen', children: [
+    { type: 'Stat', label: 'До следующих', value: '{{daysToNext | integer}}' },
+    { type: 'DateField', label: 'Начало последних', bind: 'lastPeriod' },
+    { type: 'Calendar', bind: 'selectedDate', marks: [
+      { dates: 'periodDays', color: '#C2385F', label: 'Месячные' },
+      { dates: 'fertileDays', color: '#6244D6', label: 'Фертильные' },
+      { dates: '[ovulation]', color: '#0E7C7B', label: 'Овуляция' },
+    ] },
+  ] },
+};
+assert.ok(validateSpec(cycleCalendar).ok, 'календарь цикла должен собираться');
+console.log('Календарь цикла проверен');

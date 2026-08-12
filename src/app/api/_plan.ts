@@ -130,6 +130,9 @@ function correct(plan: Plan): Plan {
     components.add('List');
   }
 
+  // Календарь без выбора даты бесполезен: задать точку отсчёта нечем.
+  if (components.has('Calendar')) components.add('DateField');
+
   return {
     ...plan,
     capabilities: [...capabilities],

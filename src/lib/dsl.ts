@@ -53,7 +53,7 @@ export const COMPONENTS: ComponentDef[] = [
   { type: 'Gallery', description: 'grid of photos from record history; imageKey is the record field with the file path, columns 2–4', required: [] },
   { type: 'LineChart', description: 'line over recent entries; values is an expression returning a list of numbers (usually recordValues)', required: ['values'] },
   { type: 'PieChart', description: 'donut chart by category; groupBy is the record field to group by, valueKey is what to sum', required: ['groupBy'] },
-  { type: 'Calendar', description: 'month grid; bind holds the selected date (timestamp), dateKey is the record field to mark', binds: true },
+  { type: 'Calendar', description: 'month grid, opens on the current month; bind holds the selected date (timestamp), dateKey marks days from record history, marks: [{dates: expression returning timestamps, color, label}] marks computed days', binds: true },
   { type: 'DateField', description: 'date or time picker; bind holds a timestamp in ms, mode: date | time', binds: true },
   { type: 'Table', description: 'table over record history; columns: [{key,label}], max 3 columns — a phone fits no more; image fields render as thumbnails', required: ['columns'] },
   { type: 'List', description: 'record history; valueKey is the record field, imageKey adds a thumbnail, suffix, limit', required: [] },
@@ -87,7 +87,7 @@ export const ACTIONS: ActionDef[] = [
 export const FUNCTION_NAMES = [
   'min', 'max', 'abs', 'round', 'floor', 'ceil', 'sqrt', 'pow', 'clamp',
   'len', 'sum', 'avg', 'coalesce', 'ifElse', 'concat', 'upper', 'lower',
-  'now', 'daysBetween', 'minutesOf', 'secondsOf',
+  'now', 'daysBetween', 'minutesOf', 'secondsOf', 'range', 'addDays', 'startOfDay',
 ];
 
 /** Фильтры форматирования в шаблонах: {{выражение | фильтр}}. */
