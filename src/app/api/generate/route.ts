@@ -10,6 +10,8 @@ interface Body {
   locale?: string;
   /** Идентификаторы фич, оставленных пользователем. Пусто — собираем как раньше. */
   features?: string[];
+  /** Фичи, дописанные пользователем своими словами. */
+  customFeatures?: string[];
 }
 
 export async function OPTIONS(req: Request) {
@@ -45,7 +47,15 @@ export async function POST(req: Request) {
     ? body.features.filter((item) => typeof item === 'string').slice(0, 10)
     : undefined;
 
-  const result = await generateFromRequest(prompt, locale, features);
+  const customFeatures = Array.isArray(body.customFeatures)
+    ? body.customFeatures
+        .filter((item) => typeof item === 'string')
+        .map((item) => item.trim().slice(0, 120))
+        .filter((item) => item.length > 2)
+        .slice(0, 5)
+    : undefined;
+
+  const result = await generateFromRequest(prompt, locale, features, customFeatures);
 
   if (!result.ok) {
     return json(
@@ -70,6 +80,7 @@ export async function POST(req: Request) {
       attempts: result.attempts,
       kind: result.plan?.kind,
       features: result.features,
+      missingFeatures: result.missingFeatures,
       credits: charged.credits,
     },
     200,

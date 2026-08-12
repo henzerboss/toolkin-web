@@ -25,6 +25,8 @@ export interface SpecAttempt {
   autofixed?: string[];
   /** Фичи, дошедшие до готовой утилиты. Приложение показывает их пользователю. */
   features?: string[];
+  /** Фичи, которых не хватило. Утилита всё равно отдаётся — но честно. */
+  missingFeatures?: { id: string; title: string }[];
 }
 
 const MAX_REPAIRS = Number.parseInt(process.env.TOOLKIN_MAX_REPAIRS ?? '2', 10);
@@ -46,6 +48,14 @@ export async function generateSpec(
   let attempts = 0;
   let lastErrors: string[] = [];
   const usage = { input: 0, output: 0, thoughts: 0 };
+
+  /**
+   * Лучшая из полученных спек. Нужна, потому что недостающая фича не повод
+   * оставить человека ни с чем: утилита с шестью фичами из семи полезнее
+   * пустого экрана с ошибкой, а формулировка «не хватило вот этого» честнее
+   * и понятнее, чем «что-то пошло не так».
+   */
+  let best: { spec: MiniAppSpec; check: ReturnType<typeof checkFeatures> } | null = null;
 
   for (let round = 0; round <= MAX_REPAIRS; round++) {
     attempts += 1;
@@ -85,7 +95,13 @@ export async function generateSpec(
       // Обещанные фичи проверяются последними: сначала утилита должна
       // работать, потом делать то, на что человек согласился галочками.
       const featureCheck = checkFeatures(fixed.spec, plan?.features ?? []);
+
       if (!featureCheck.ok) {
+        // Запоминаем самый полный вариант и пробуем ещё раз. Если попытки
+        // кончатся, отдадим его, а не ошибку.
+        if (!best || featureCheck.implemented.length > best.check.implemented.length) {
+          best = { spec: fixed.spec, check: featureCheck };
+        }
         lastErrors = featureCheck.issues;
         prompt = buildRepairPrompt(JSON.stringify(fixed.spec), featureCheck.issues);
         continue;
@@ -98,11 +114,25 @@ export async function generateSpec(
         usage,
         autofixed: fixed.applied,
         features: featureCheck.implemented,
+        missingFeatures: [],
       };
     }
 
     lastErrors = validation.errors;
     prompt = buildRepairPrompt(JSON.stringify(parsed), lastErrors);
+  }
+
+  // Утилита работает, но не все фичи получились — отдаём как есть.
+  // Человек увидит, чего не хватило, и сможет дописать это правкой.
+  if (best) {
+    return {
+      ok: true,
+      spec: best.spec,
+      attempts,
+      usage,
+      features: best.check.implemented,
+      missingFeatures: best.check.missing,
+    };
   }
 
   return { ok: false, attempts, errors: lastErrors, error: 'validation_failed', usage };
@@ -125,15 +155,41 @@ export async function generateFromRequest(
   request: string,
   locale: string,
   selectedFeatures?: string[],
+  customFeatures?: string[],
 ): Promise<SpecAttempt> {
   // Кэш учитывает выбранные фичи: та же просьба с другим набором галочек —
   // другая утилита, и отдавать по ней старую спеку нельзя.
-  const cacheSuffix = selectedFeatures?.length ? `#${[...selectedFeatures].sort().join(',')}` : '';
+  const cacheSuffix = [
+    selectedFeatures?.length ? `#${[...selectedFeatures].sort().join(',')}` : '',
+    customFeatures?.length ? `+${customFeatures.join('|')}` : '',
+  ].join('');
   const cached = await readCache(request + cacheSuffix, locale);
   if (cached) return { ok: true, spec: cached, attempts: 0, cached: true };
 
   const planned = await planApp(request, locale);
-  const plan = selectedFeatures?.length ? planForFeatures(planned.plan, selectedFeatures) : planned.plan;
+  let plan = selectedFeatures?.length ? planForFeatures(planned.plan, selectedFeatures) : planned.plan;
+
+  // Дописанные пользователем фичи попадают в задание, но не в механическую
+  // проверку: требований у них нет, и придумывать их за человека нельзя —
+  // проверка требовала бы того, чего он не просил.
+  if (customFeatures?.length) {
+    plan = {
+      ...plan,
+      features: [
+        ...plan.features,
+        ...customFeatures.map((text, index) => ({
+          id: `custom-${index}`,
+          title: text,
+          description: '',
+          essential: true,
+          requiresComponents: [],
+          requiresActions: [],
+          requiresCapabilities: [],
+        })),
+      ],
+    };
+  }
+
   const ok = planned.ok;
 
   const system = buildSystemInstruction(locale, ok ? plan : undefined);

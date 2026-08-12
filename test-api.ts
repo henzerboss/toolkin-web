@@ -345,6 +345,34 @@ withoutReminder.ui.children.pop();
 withoutReminder.capabilities = [];
 const partial = checkFeatures(withoutReminder, promised);
 assert.ok(!partial.ok);
-assert.match(partial.issues.join('\n'), /promised to the user but is not implemented/);
+assert.match(partial.issues.join('\n'), /is missing: action notify.at/);
 assert.deepStrictEqual(partial.implemented, ['predict'], 'реализованное должно остаться в списке');
-console.log('Согласование фич проверено');
+assert.deepStrictEqual(partial.missing.map((item) => item.id), ['remind']);
+
+// Классы эквивалентности — из-за их отсутствия первая версия заворачивала
+// исправные утилиты: планировщик просил Stat, сборщик делал ProgressRing.
+const equivalent: Feature[] = [
+  { id: 'progress', title: 'Прогресс', description: '', essential: true,
+    requiresComponents: ['Stat'], requiresActions: [], requiresCapabilities: [] },
+  { id: 'input', title: 'Ввод суммы', description: '', essential: true,
+    requiresComponents: [], requiresActions: ['state.set'], requiresCapabilities: [] },
+];
+
+const viaRingAndBind = {
+  schemaVersion: 1, id: 'e', version: 1,
+  manifest: { name: 'Калории', icon: 'x', color: 'amber', locale: 'ru' },
+  capabilities: [],
+  state: { eaten: 0, goal: 2000 },
+  derived: { progress: 'clamp(eaten / max(goal, 1), 0, 1)' },
+  ui: { type: 'Screen', children: [
+    { type: 'ProgressRing', progress: 'progress', value: '{{eaten | integer}}' },
+    { type: 'NumberField', label: 'Съедено', bind: 'eaten' },
+  ] },
+} as never;
+
+const lenient = checkFeatures(viaRingAndBind, equivalent);
+assert.ok(
+  lenient.ok,
+  `ProgressRing должен закрывать Stat, а bind — state.set: ${lenient.issues.join(' | ')}`,
+);
+console.log('Согласование фич проверено, эквивалентность работает');
