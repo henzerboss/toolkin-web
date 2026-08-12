@@ -5,7 +5,8 @@ import { normalizeGeneratedSpec } from './src/lib/normalizeGeneratedSpec';
 import { smokeTest } from './src/lib/smokeTest';
 import { checkFeatures } from './src/lib/featureCheck';
 import type { Feature, Plan } from './src/app/api/_plan';
-import { planForFeatures } from './src/app/api/_plan';
+import { createLocalPlan, normalizePlanCandidate, planForFeatures } from './src/app/api/_plan';
+import { toGeminiRestThinkingLevel, toResponseJsonSchema } from './src/app/api/_shared';
 import { PIPELINE_VERSION, cacheKey } from './src/lib/specCacheKey';
 import { buildGeneratePrompt, buildSystemInstruction } from './src/app/api/_prompt';
 import { creditsForProduct } from './src/lib/pricing';
@@ -14,6 +15,42 @@ import { DEMO_SPECS } from './src/lib/exampleSpecs';
 import type { MiniAppSpec } from './src/lib/specTypes';
 
 const validationErrors = (result: ReturnType<typeof validateSpec>): string => result.ok ? '' : result.errors.join('\n');
+
+
+// Planner transport: OpenAPI-style schema is converted to the current Gemini
+// responseJsonSchema format instead of using the deprecated responseSchema field.
+const convertedSchema = toResponseJsonSchema({
+  type: 'OBJECT', properties: { features: { type: 'ARRAY', items: { type: 'STRING' }, minItems: 1 } },
+  required: ['features'], propertyOrdering: ['features'],
+});
+assert.strictEqual(convertedSchema.type, 'object');
+assert.strictEqual(((convertedSchema.properties as any).features as any).type, 'array');
+assert.strictEqual((((convertedSchema.properties as any).features as any).items as any).type, 'string');
+assert.strictEqual(toGeminiRestThinkingLevel('medium'), 'MEDIUM');
+assert.strictEqual(toGeminiRestThinkingLevel('high'), 'HIGH');
+
+// A JSON-only planner fallback is normalized just as strictly as structured
+// output: unknown implementation hints are dropped and a usable plan survives.
+const fallbackCandidate = normalizePlanCandidate({
+  kind: 'tracker', title: 'Трекер воды', summary: 'Следить за водой', navigation: 'stack',
+  screens: [{ id: 'home', title: 'Сегодня', purpose: 'Добавление' }, { id: 'history', title: 'История', purpose: 'История' }],
+  customComponents: [], needsRecords: true, needsStructuredAi: false,
+  capabilities: ['notifications', 'made-up-capability'], components: ['Button', 'Ghost'],
+  features: [{ id: 'add', title: 'Добавлять воду', description: 'Сохраняет порцию', essential: true,
+    acceptanceCriteria: ['Порция появляется в истории'], requiresRecords: true, requiresStructuredAi: false,
+    requiresComponents: ['Button', 'Ghost'], requiresActions: ['records.add', 'fly'], requiresCapabilities: [] }],
+});
+assert.ok(fallbackCandidate);
+assert.deepStrictEqual(fallbackCandidate?.components, ['Button']);
+assert.deepStrictEqual(fallbackCandidate?.features[0].requiresActions, ['records.add']);
+assert.ok(!fallbackCandidate?.capabilities.includes('made-up-capability'));
+
+// Even if both AI planner attempts are unavailable/malformed, the mandatory
+// review screen can still be populated with a conservative, signed plan.
+const localPlan = createLocalPlan('трекер расходов');
+assert.strictEqual(localPlan.features.length, 1);
+assert.strictEqual(localPlan.features[0].essential, true);
+assert.strictEqual(localPlan.kind, 'tracker');
 
 for (const spec of DEMO_SPECS) {
   const result = validateSpec(spec);

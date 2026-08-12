@@ -48,8 +48,9 @@ const parsePositiveInt = (value: string | undefined, fallback: number, min: numb
 const MAX_OUTPUT_TOKENS = parsePositiveInt(process.env.TOOLKIN_MAX_OUTPUT_TOKENS, 8192, 256, 65536);
 
 /**
- * Уровень размышления. У актуальных Gemini 3.x это thinkingLevel, а не
- * thinkingBudget. Flash-Lite поддерживает minimal для дешёвых узких задач;
+ * Уровень размышления. В конфиге Toolkin храним удобные lowercase значения,
+ * но REST generateContent ожидает enum MINIMAL/LOW/MEDIUM/HIGH; callOnce
+ * переводит значение в uppercase на HTTP-границе. Flash-Lite поддерживает minimal для дешёвых узких задач;
  * сложные Product Plan/generation остаются на medium/high.
  *
  * Разный уровень на разные задачи не каприз: выбор между песочницей и
@@ -61,6 +62,9 @@ const MAX_OUTPUT_TOKENS = parsePositiveInt(process.env.TOOLKIN_MAX_OUTPUT_TOKENS
  * а видимая в конфиге, но не работающая ручка хуже отсутствующей.
  */
 export type ThinkingLevel = 'minimal' | 'low' | 'medium' | 'high';
+export type GeminiRestThinkingLevel = 'MINIMAL' | 'LOW' | 'MEDIUM' | 'HIGH';
+export const toGeminiRestThinkingLevel = (level: ThinkingLevel): GeminiRestThinkingLevel =>
+  level.toUpperCase() as GeminiRestThinkingLevel;
 const THINKING_LEVELS = new Set<ThinkingLevel>(['minimal', 'low', 'medium', 'high']);
 const parseThinking = (value: string | undefined, fallback: ThinkingLevel): ThinkingLevel =>
   value && THINKING_LEVELS.has(value as ThinkingLevel) ? (value as ThinkingLevel) : fallback;
@@ -166,6 +170,31 @@ export interface GeminiResult {
 
 type GeminiPart = { text: string } | { inlineData: { mimeType: string; data: string } };
 
+/**
+ * `responseSchema` is deprecated in the current Gemini generateContent API.
+ * Toolkin's planner schema is intentionally authored in the older OpenAPI-style
+ * form (OBJECT/STRING/ARRAY) because it is compact and easy to share with our
+ * existing validators. Convert it at the HTTP boundary to the supported
+ * `responseJsonSchema` representation instead of sending a deprecated field.
+ */
+export function toResponseJsonSchema(schema: Record<string, unknown>): Record<string, unknown> {
+  const convert = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(convert);
+    if (!value || typeof value !== 'object') return value;
+    const source = value as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    for (const [key, raw] of Object.entries(source)) {
+      if (key === 'type' && typeof raw === 'string') {
+        out[key] = raw.toLowerCase();
+      } else {
+        out[key] = convert(raw);
+      }
+    }
+    return out;
+  };
+  return convert(schema) as Record<string, unknown>;
+}
+
 async function callOnce(
   model: string,
   apiKey: string,
@@ -185,13 +214,13 @@ async function callOnce(
       contents: [{ role: 'user', parts }],
       generationConfig: {
         maxOutputTokens: MAX_OUTPUT_TOKENS,
-        thinkingConfig: { thinkingLevel: thinking },
+        thinkingConfig: { thinkingLevel: toGeminiRestThinkingLevel(thinking) },
         ...(jsonOnly ? { responseMimeType: 'application/json' } : {}),
-        // Ограниченное декодирование: модель физически не может вернуть
-        // несуществующий компонент или возможность. Схема передаётся только
-        // здесь и намеренно не дублируется в промпте — документация Google
-        // предупреждает, что дублирование снижает качество вывода.
-        ...(responseSchema ? { responseSchema } : {}),
+        // Structured output is useful, but never couple product availability to
+        // a deprecated transport field. Google now recommends responseJsonSchema.
+        // The planner has a second JSON-only attempt without a schema as an
+        // additional production fallback for provider-side schema regressions.
+        ...(responseSchema ? { responseJsonSchema: toResponseJsonSchema(responseSchema) } : {}),
       },
     }),
   });

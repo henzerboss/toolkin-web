@@ -1,4 +1,4 @@
-import { MODELS_BY_PURPOSE, cors, guard, json } from '../_shared';
+import { MODELS_BY_PURPOSE, cors, guard, json, toGeminiRestThinkingLevel } from '../_shared';
 
 export const runtime = 'nodejs';
 
@@ -11,6 +11,7 @@ type ProbeState = {
   listError: string | null;
   probes: { model: string; ok: boolean; status: number; error?: string }[];
   working: string[];
+  planner: { model: string; ok: boolean; status: number; error?: string };
   image: Record<string, unknown>;
 };
 let probeCache: ProbeState | null = null;
@@ -43,13 +44,16 @@ export async function GET(req: Request) {
     process.env.TOOLKIN_PLAN_SECRET &&
     process.env.TOOLKIN_REVENUECAT_WEBHOOK_SECRET
   );
-  const ok = external.working.length > 0 && productionConfigOk;
+  const planWorking = MODELS_BY_PURPOSE.plan.some((model) => external.working.includes(model));
+  const ok = planWorking && external.planner.ok && productionConfigOk;
 
   return json(
     {
       ok,
       configured: CONFIGURED_MODELS,
       working: external.working,
+      planWorking,
+      plannerProbe: external.planner,
       probes: external.probes,
       listError: external.listError,
       availableCount: external.available.length,
@@ -106,14 +110,58 @@ async function runExternalProbes(apiKey: string, now: number): Promise<ProbeStat
     }),
   );
 
+  const planner = await probePlanner(apiKey);
+
   return {
     expiresAt: now + PROBE_CACHE_MS,
     available,
     listError,
     probes,
     working: probes.filter((probe) => probe.ok).map((probe) => probe.model),
+    planner,
     image: await probeImage(),
   };
+}
+
+async function probePlanner(apiKey: string): Promise<ProbeState['planner']> {
+  let last = { model: MODELS_BY_PURPOSE.plan[0] ?? 'none', ok: false, status: 0, error: 'no_plan_models' };
+  for (const model of MODELS_BY_PURPOSE.plan) {
+    try {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ role: 'user', parts: [{ text: 'Return JSON with ok=true.' }] }],
+            generationConfig: {
+              maxOutputTokens: 32,
+              thinkingConfig: { thinkingLevel: toGeminiRestThinkingLevel('minimal') },
+              responseMimeType: 'application/json',
+              responseJsonSchema: {
+                type: 'object',
+                properties: { ok: { type: 'boolean' } },
+                required: ['ok'],
+              },
+            },
+          }),
+        },
+      );
+      if (!res.ok) {
+        last = { model, ok: false, status: res.status, error: (await res.text()).slice(0, 400) };
+        continue;
+      }
+      const body = await res.json() as { candidates?: { content?: { parts?: { text?: string }[] } }[] };
+      const text = (body.candidates?.[0]?.content?.parts ?? []).map((part) => part.text ?? '').join('').trim();
+      let parsedOk = false;
+      try { parsedOk = JSON.parse(text)?.ok === true; } catch { parsedOk = false; }
+      if (parsedOk) return { model, ok: true, status: res.status };
+      last = { model, ok: false, status: res.status, error: 'structured_output_invalid' };
+    } catch (error) {
+      last = { model, ok: false, status: 0, error: String(error).slice(0, 400) };
+    }
+  }
+  return last;
 }
 
 async function probeImage(): Promise<Record<string, unknown>> {

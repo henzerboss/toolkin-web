@@ -292,11 +292,14 @@ curl -s -H "X-Client-Token: $TOOLKIN_CLIENT_TOKEN" https://toolkin.app/api/healt
 ```
 
 Роут делает настоящий вызов каждой уникальной модели из настроенных purpose-cascade и показывает,
-какие отвечают. Пустой `working` — генерация работать не будет, смотрите
-`suggestions`: там имена моделей, которые ключ реально видит. Перед переключением
-трафика также проверьте, что `productionConfigOk` равен `true`: в production это
-подтверждает наличие `DATABASE_URL`, `TOOLKIN_CLIENT_TOKEN`, отдельного
-`TOOLKIN_PLAN_SECRET` и `TOOLKIN_REVENUECAT_WEBHOOK_SECRET`.
+какие отвечают. Кроме простого `ping` он отдельно прогоняет **planner probe** с тем же
+REST-контрактом, который критичен для `/api/plan`: `thinkingConfig.thinkingLevel`
+в enum-формате и `responseJsonSchema`. Перед переключением трафика должны быть
+`planWorking: true`, `plannerProbe.ok: true` и `productionConfigOk: true`. Пустой
+`working` — генерация работать не будет; `suggestions` показывает модели, которые
+ключ реально видит. `productionConfigOk` в production подтверждает наличие
+`DATABASE_URL`, `TOOLKIN_CLIENT_TOKEN`, отдельного `TOOLKIN_PLAN_SECRET` и
+`TOOLKIN_REVENUECAT_WEBHOOK_SECRET`.
 
 Доступность и имена Gemini-моделей меняются, поэтому `/api/health` считается
 источником истины именно для вашего production-ключа. Не привязывайте deploy к

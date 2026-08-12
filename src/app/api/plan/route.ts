@@ -44,7 +44,7 @@ export async function POST(req: Request) {
 
   const localeRaw = (body.locale ?? 'en').trim();
   const locale = /^[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{2,8})?$/.test(localeRaw) ? localeRaw.slice(0, 24) : 'en';
-  const { plan, ok } = await planApp(prompt, locale);
+  const { plan, ok, mode } = await planApp(prompt, locale);
 
   // Product planning is a mandatory checkpoint. Never silently skip it:
   // otherwise the person reviews one thing and generation builds another.
@@ -52,12 +52,21 @@ export async function POST(req: Request) {
     return json({ error: 'plan_failed' }, 503, headers);
   }
 
+  let planToken: string;
+  try {
+    planToken = signPlanToken(prompt, locale, plan);
+  } catch (error) {
+    console.error('[toolkin.plan] signing failed:', error);
+    return json({ error: 'server_misconfigured' }, 503, headers);
+  }
+
   return json(
     {
-      planToken: signPlanToken(prompt, locale, plan),
+      planToken,
       title: plan.title,
       summary: plan.summary,
       kind: plan.kind,
+      planningMode: mode ?? 'structured',
       features: plan.features.map((feature) => ({
         id: feature.id,
         title: feature.title,

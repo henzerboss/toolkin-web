@@ -13,10 +13,9 @@ interface PlanTokenPayload {
 }
 
 function secret(): string {
-  // Keep existing deployments functional, but a dedicated signing key is strongly preferred.
-  const value = process.env.TOOLKIN_PLAN_SECRET
-    ?? process.env.TOOLKIN_GEMINI_API_KEY
-    ?? process.env.RECIPE_GEMINI_API_KEY;
+  // First release: there is no compatibility reason to reuse unrelated API keys.
+  // Plan signing fails closed unless its dedicated production secret is present.
+  const value = process.env.TOOLKIN_PLAN_SECRET?.trim();
   if (!value) throw new Error('TOOLKIN_PLAN_SECRET missing');
   return value;
 }
