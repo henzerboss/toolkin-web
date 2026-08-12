@@ -1,7 +1,10 @@
 import { THINKING, callGemini, safeJsonParse, type Purpose, type ThinkingLevel } from './_shared';
 import { buildGeneratePrompt, buildRepairPrompt, buildSystemInstruction } from './_prompt';
-import { planApp, type Plan } from './_plan';
+import { planApp, planForFeatures, type Plan } from './_plan';
+import { checkFeatures } from '@/lib/featureCheck';
 import { readCache, writeCache } from '@/lib/specCache';
+import { autofix } from '@/lib/autofix';
+import { smokeTest } from '@/lib/smokeTest';
 import { validateSpec } from '@/lib/validateSpec';
 import type { MiniAppSpec } from '@/lib/specTypes';
 
@@ -18,6 +21,10 @@ export interface SpecAttempt {
   cached?: boolean;
   /** Фактический расход токенов за все вызовы генерации. */
   usage?: { input: number; output: number; thoughts: number };
+  /** Какие механические ошибки починены кодом — видно, что чинить в промпте. */
+  autofixed?: string[];
+  /** Фичи, дошедшие до готовой утилиты. Приложение показывает их пользователю. */
+  features?: string[];
 }
 
 const MAX_REPAIRS = Number.parseInt(process.env.TOOLKIN_MAX_REPAIRS ?? '2', 10);
@@ -33,6 +40,7 @@ export async function generateSpec(
   initialPrompt: string,
   thinking: ThinkingLevel = THINKING.generate,
   purpose: Purpose = 'generate',
+  plan?: Plan,
 ): Promise<SpecAttempt> {
   let prompt = initialPrompt;
   let attempts = 0;
@@ -52,13 +60,46 @@ export async function generateSpec(
 
     const parsed = safeJsonParse<unknown>(result.text ?? '', null);
     if (parsed === null) {
-      lastErrors = ['Ответ не является корректным JSON'];
+      lastErrors = ['The answer is not valid JSON'];
       prompt = buildRepairPrompt(result.text ?? '', lastErrors);
       continue;
     }
 
     const validation = validateSpec(parsed);
-    if (validation.ok) return { ok: true, spec: validation.spec, attempts, usage };
+
+    if (validation.ok) {
+      // Механические привычки JavaScript чинятся кодом до пробного прогона:
+      // Math.round и state.bill не стоят обращения к модели.
+      const fixed = autofix(validation.spec);
+
+      // Форма правильная — теперь проверяем, что оно работает. Валидатор
+      // пропускает утилиты, где на экране NaN, а кнопки ничего не меняют:
+      // форма безупречна, а пользоваться нечем.
+      const smoke = smokeTest(fixed.spec);
+      if (!smoke.ok) {
+        lastErrors = smoke.issues;
+        prompt = buildRepairPrompt(JSON.stringify(fixed.spec), smoke.issues);
+        continue;
+      }
+
+      // Обещанные фичи проверяются последними: сначала утилита должна
+      // работать, потом делать то, на что человек согласился галочками.
+      const featureCheck = checkFeatures(fixed.spec, plan?.features ?? []);
+      if (!featureCheck.ok) {
+        lastErrors = featureCheck.issues;
+        prompt = buildRepairPrompt(JSON.stringify(fixed.spec), featureCheck.issues);
+        continue;
+      }
+
+      return {
+        ok: true,
+        spec: fixed.spec,
+        attempts,
+        usage,
+        autofixed: fixed.applied,
+        features: featureCheck.implemented,
+      };
+    }
 
     lastErrors = validation.errors;
     prompt = buildRepairPrompt(JSON.stringify(parsed), lastErrors);
@@ -80,20 +121,27 @@ export async function generateSpec(
  * Если планирование не удалось, второй этап идёт с полным промптом — потеря
  * качества, но не отказ.
  */
-export async function generateFromRequest(request: string, locale: string): Promise<SpecAttempt> {
-  // Кэш до планирования: у одинакового запроса и план будет одинаковым,
-  // а примеры-затравки на экране создания вообще одни у всех пользователей.
-  const cached = await readCache(request, locale);
+export async function generateFromRequest(
+  request: string,
+  locale: string,
+  selectedFeatures?: string[],
+): Promise<SpecAttempt> {
+  // Кэш учитывает выбранные фичи: та же просьба с другим набором галочек —
+  // другая утилита, и отдавать по ней старую спеку нельзя.
+  const cacheSuffix = selectedFeatures?.length ? `#${[...selectedFeatures].sort().join(',')}` : '';
+  const cached = await readCache(request + cacheSuffix, locale);
   if (cached) return { ok: true, spec: cached, attempts: 0, cached: true };
 
-  const { plan, ok } = await planApp(request, locale);
+  const planned = await planApp(request, locale);
+  const plan = selectedFeatures?.length ? planForFeatures(planned.plan, selectedFeatures) : planned.plan;
+  const ok = planned.ok;
 
   const system = buildSystemInstruction(locale, ok ? plan : undefined);
   const prompt = buildGeneratePrompt(request, locale, ok ? plan : undefined);
 
-  const result = await generateSpec(system, prompt);
+  const result = await generateSpec(system, prompt, THINKING.generate, 'generate', ok ? plan : undefined);
 
-  if (result.ok && result.spec) await writeCache(request, locale, result.spec, plan.kind);
+  if (result.ok && result.spec) await writeCache(request + cacheSuffix, locale, result.spec, plan.kind);
 
   // Вызов планирования тоже считается: иначе метрика «сколько обращений к
   // модели стоила генерация» врала бы в меньшую сторону.

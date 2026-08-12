@@ -1,5 +1,9 @@
 import assert from 'node:assert';
 import { validateSpec } from './src/lib/validateSpec';
+import { autofix } from './src/lib/autofix';
+import { smokeTest } from './src/lib/smokeTest';
+import { checkFeatures } from './src/lib/featureCheck';
+import type { Feature } from './src/app/api/_plan';
 import { PIPELINE_VERSION, cacheKey } from './src/lib/specCacheKey';
 import { buildGeneratePrompt, buildSystemInstruction } from './src/app/api/_prompt';
 import { creditsForProduct } from './src/lib/pricing';
@@ -266,3 +270,81 @@ const cycleCalendar = {
 };
 assert.ok(validateSpec(cycleCalendar).ok, 'календарь цикла должен собираться');
 console.log('Календарь цикла проверен');
+
+// Пробный прогон: главный ответ на «спека валидна, а приложение не работает».
+// Валидатор смотрит на форму, прогон исполняет утилиту и смотрит на результат.
+for (const spec of DEMO_SPECS) {
+  const smoke = smokeTest(spec);
+  assert.ok(smoke.ok, `${spec.id} должна проходить прогон: ${smoke.issues.join(' | ')}`);
+}
+
+const emptyButton = {
+  ...DEMO_SPECS[0], derived: {},
+  ui: { type: 'Screen', children: [
+    { type: 'Stat', label: 'Итого', value: '{{bill | money}}' },
+    { type: 'Button', title: 'Посчитать', onPress: [] },
+  ] },
+};
+const emptyResult = validateSpec(emptyButton);
+assert.ok(emptyResult.ok, 'валидатор пустую кнопку не видит — это работа прогона');
+assert.match(smokeTest(emptyResult.spec).issues.join('\n'), /does nothing when tapped/);
+
+const staticOnly = {
+  ...DEMO_SPECS[0], derived: {},
+  ui: { type: 'Screen', children: [{ type: 'Text', value: 'Просто текст' }] },
+};
+const staticResult = validateSpec(staticOnly);
+assert.ok(staticResult.ok);
+assert.match(smokeTest(staticResult.spec).issues.join('\n'), /only static text/);
+
+// Автопочинка: привычки JavaScript чинятся кодом, а не вызовом Gemini.
+const jsHabits = {
+  ...DEMO_SPECS[0],
+  derived: {
+    tip: 'Math.round(state.bill * state.tipPct / 100)',
+    perPerson: 'tip / Math.max(state.people, 1)',
+    kind: 'state.people === 1 ? "one" : "many"',
+  },
+};
+const fixed = autofix(jsHabits as never);
+assert.deepStrictEqual(
+  Object.values(fixed.spec.derived ?? {}),
+  ['round(bill * tipPct / 100)', 'tip / max(people, 1)', 'people == 1 ? "one" : "many"'],
+);
+assert.ok(validateSpec(fixed.spec).ok, 'после автопочинки спека должна быть валидной');
+console.log(`Пробный прогон и автопочинка проверены (починено: ${fixed.applied.join(', ')})`);
+
+// Согласование фич: список, показанный пользователю, — это обещание.
+// Утилита без обещанной фичи не должна доходить до него.
+const promised: Feature[] = [
+  { id: 'predict', title: 'Прогноз цикла', description: '', essential: true,
+    requiresComponents: ['Calendar'], requiresActions: [], requiresCapabilities: [] },
+  { id: 'remind', title: 'Напоминание', description: '', essential: false,
+    requiresComponents: [], requiresActions: ['notify.at'], requiresCapabilities: ['notifications'] },
+];
+
+const complete = {
+  schemaVersion: 1, id: 'c', version: 1,
+  manifest: { name: 'Календарь', icon: 'x', color: 'rose', locale: 'ru' },
+  capabilities: ['notifications'],
+  state: { lastPeriod: 0, selectedDate: 0 },
+  ui: { type: 'Screen', children: [
+    { type: 'Stat', label: 'До следующих', value: '{{lastPeriod | integer}}' },
+    { type: 'Calendar', bind: 'selectedDate' },
+    { type: 'Button', title: 'Напомнить',
+      onPress: [{ action: 'notify.at', title: 'Скоро', at: '{{lastPeriod}}' }] },
+  ] },
+} as never;
+
+const allFeatures = checkFeatures(complete, promised);
+assert.ok(allFeatures.ok, `все обещанные фичи должны быть на месте: ${allFeatures.issues.join(' | ')}`);
+assert.deepStrictEqual(allFeatures.implemented, ['predict', 'remind']);
+
+const withoutReminder = JSON.parse(JSON.stringify(complete));
+withoutReminder.ui.children.pop();
+withoutReminder.capabilities = [];
+const partial = checkFeatures(withoutReminder, promised);
+assert.ok(!partial.ok);
+assert.match(partial.issues.join('\n'), /promised to the user but is not implemented/);
+assert.deepStrictEqual(partial.implemented, ['predict'], 'реализованное должно остаться в списке');
+console.log('Согласование фич проверено');

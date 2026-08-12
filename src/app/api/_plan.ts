@@ -1,4 +1,4 @@
-import { CAPABILITIES, COMPONENT_TYPES } from '@/lib/dsl';
+import { ACTION_NAMES, CAPABILITIES, COMPONENT_TYPES } from '@/lib/dsl';
 import { THINKING, callGemini, safeJsonParse } from './_shared';
 
 /**
@@ -32,6 +32,26 @@ export type AppKind =
   | 'countdown'
   | 'other';
 
+/**
+ * Фича — единица продуктовой ценности, которую пользователь может включить
+ * или выключить.
+ *
+ * Поля requires* существуют не для модели, а для проверки: по ним видно,
+ * реализована ли фича на самом деле. Пользователь выбрал «напоминания» —
+ * значит в спеке обязан быть экшен notify.at, иначе обещание нарушено.
+ * Без этой механики список фич был бы декорацией.
+ */
+export interface Feature {
+  id: string;
+  title: string;
+  description: string;
+  /** Основные включены по умолчанию и снимаются пользователем осознанно. */
+  essential: boolean;
+  requiresComponents: string[];
+  requiresActions: string[];
+  requiresCapabilities: string[];
+}
+
 export interface Plan {
   kind: AppKind;
   title: string;
@@ -40,6 +60,7 @@ export interface Plan {
   needsRecords: boolean;
   needsStructuredAi: boolean;
   summary: string;
+  features: Feature[];
 }
 
 const KINDS: AppKind[] = [
@@ -51,6 +72,24 @@ const KINDS: AppKind[] = [
  * Схема плана. Перечисления берутся из манифеста DSL, поэтому список
  * компонентов в схеме не может разойтись с рантаймом.
  */
+const FEATURE_SCHEMA: Record<string, unknown> = {
+  type: 'OBJECT',
+  properties: {
+    id: { type: 'STRING' },
+    title: { type: 'STRING' },
+    description: { type: 'STRING' },
+    essential: { type: 'BOOLEAN' },
+    requiresComponents: { type: 'ARRAY', items: { type: 'STRING', enum: COMPONENT_TYPES } },
+    requiresActions: { type: 'ARRAY', items: { type: 'STRING', enum: ACTION_NAMES } },
+    requiresCapabilities: { type: 'ARRAY', items: { type: 'STRING', enum: [...CAPABILITIES] } },
+  },
+  required: ['id', 'title', 'description', 'essential', 'requiresComponents', 'requiresActions', 'requiresCapabilities'],
+  propertyOrdering: [
+    'id', 'title', 'description', 'essential',
+    'requiresComponents', 'requiresActions', 'requiresCapabilities',
+  ],
+};
+
 const PLAN_SCHEMA: Record<string, unknown> = {
   type: 'OBJECT',
   properties: {
@@ -61,18 +100,44 @@ const PLAN_SCHEMA: Record<string, unknown> = {
     needsRecords: { type: 'BOOLEAN' },
     needsStructuredAi: { type: 'BOOLEAN' },
     summary: { type: 'STRING' },
+    features: { type: 'ARRAY', items: FEATURE_SCHEMA, minItems: 3, maxItems: 7 },
   },
-  required: ['kind', 'title', 'capabilities', 'components', 'needsRecords', 'needsStructuredAi', 'summary'],
+  required: [
+    'kind', 'title', 'capabilities', 'components',
+    'needsRecords', 'needsStructuredAi', 'summary', 'features',
+  ],
   // Порядок влияет на качество: модель заполняет поля по очереди, и решение
   // о типе утилиты должно быть принято до выбора компонентов.
   propertyOrdering: [
-    'kind', 'title', 'needsRecords', 'needsStructuredAi', 'capabilities', 'components', 'summary',
+    'kind', 'title', 'summary', 'features',
+    'needsRecords', 'needsStructuredAi', 'capabilities', 'components',
   ],
 };
 
 const PLAN_SYSTEM = [
   'You plan small single-screen mobile utilities. You do not write the utility yet.',
-  'Decide what kind of thing the request is and which building blocks it needs.',
+  'Decide what kind of thing the request is, then propose the features worth having.',
+  '',
+  'FEATURES are the point of this step. A person asking for a "period tracker" has not',
+  'thought through what it should do — that is your job. Propose 3 to 7 features that',
+  'make the utility genuinely useful, ordered by value, and say honestly which are',
+  'essential and which are optional. The person will tick them off before you build.',
+  '',
+  'A good feature is something the person would miss if it were absent:',
+  '  period tracker  → cycle prediction, fertile window on a calendar, period logging,',
+  '                    reminder before the next period, symptom notes, cycle length stats',
+  '  expense tracker → quick entry, split by category, monthly total, chart, export',
+  '  water tracker   → daily goal from weight, one-tap portions, progress ring, reminders',
+  'A bad feature is a restatement of the request ("tracks periods") or a component name',
+  '("has a calendar"). Describe what the person gets, in their language, in one line.',
+  '',
+  'requiresComponents, requiresActions, requiresCapabilities: what this feature needs to',
+  'exist in the built utility. These are checked mechanically after generation — if you',
+  'list notify.at, the utility will be rejected unless it actually schedules a reminder.',
+  'List only what is truly required by that feature, nothing "just in case".',
+  '',
+  'Remember the utility is ONE screen with 4 to 8 blocks. Do not propose features that',
+  'would need a second screen or a settings page.',
   '',
   'kind:',
   '  game       — anything played: snake, breakout, tic-tac-toe, memory, puzzle, reaction test',
@@ -148,12 +213,75 @@ const FALLBACK: Plan = {
   needsRecords: false,
   needsStructuredAi: false,
   summary: '',
+  features: [],
 };
 
 export interface PlanResult {
   plan: Plan;
   /** false — планирование не удалось, второй этап пойдёт с полным промптом. */
   ok: boolean;
+}
+
+function normalizeFeatures(raw: unknown): Feature[] {
+  if (!Array.isArray(raw)) return [];
+
+  const seen = new Set<string>();
+  const features: Feature[] = [];
+
+  for (const item of raw as Partial<Feature>[]) {
+    const id = String(item?.id ?? '').trim().slice(0, 40);
+    const title = String(item?.title ?? '').trim();
+    if (!id || !title || seen.has(id)) continue;
+    seen.add(id);
+
+    features.push({
+      id,
+      title: title.slice(0, 60),
+      description: String(item.description ?? '').slice(0, 140),
+      essential: Boolean(item.essential),
+      requiresComponents: Array.isArray(item.requiresComponents) ? item.requiresComponents : [],
+      requiresActions: Array.isArray(item.requiresActions) ? item.requiresActions : [],
+      requiresCapabilities: Array.isArray(item.requiresCapabilities) ? item.requiresCapabilities : [],
+    });
+  }
+
+  return features.slice(0, 7);
+}
+
+/**
+ * Пересобирает план под выбранные пользователем фичи.
+ *
+ * Снятая галочка должна убирать из плана и требования этой фичи — иначе
+ * утилита получит камеру, о которой человек не просил, и это будет выглядеть
+ * как игнорирование его выбора.
+ */
+export function planForFeatures(plan: Plan, selectedIds: string[]): Plan {
+  const selected = plan.features.filter((feature) => selectedIds.includes(feature.id));
+  if (selected.length === 0) return plan;
+
+  const components = new Set<string>();
+  const capabilities = new Set<string>();
+  const actions = new Set<string>();
+
+  for (const feature of selected) {
+    feature.requiresComponents.forEach((item) => components.add(item));
+    feature.requiresCapabilities.forEach((item) => capabilities.add(item));
+    feature.requiresActions.forEach((item) => actions.add(item));
+  }
+
+  // Записи и структурированный ответ выводятся из требований фич, а не
+  // остаются от первоначального плана.
+  const needsRecords = [...actions].some((action) => action.startsWith('records.'));
+  const needsStructuredAi = capabilities.has('llm') && plan.needsStructuredAi;
+
+  return correct({
+    ...plan,
+    features: selected,
+    components: [...components],
+    capabilities: [...capabilities],
+    needsRecords: needsRecords || plan.needsRecords,
+    needsStructuredAi,
+  });
 }
 
 export async function planApp(request: string, locale: string): Promise<PlanResult> {
@@ -177,6 +305,7 @@ export async function planApp(request: string, locale: string): Promise<PlanResu
       needsRecords: Boolean(parsed.needsRecords),
       needsStructuredAi: Boolean(parsed.needsStructuredAi),
       summary: String(parsed.summary ?? ''),
+      features: normalizeFeatures(parsed.features),
     }),
     ok: true,
   };

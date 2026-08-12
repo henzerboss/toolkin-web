@@ -18,6 +18,8 @@ import { buildGeneratePrompt, buildRepairPrompt, buildSystemInstruction } from '
 import { callGemini, safeJsonParse, type ThinkingLevel } from '../src/app/api/_shared';
 import { planApp } from '../src/app/api/_plan';
 import { validateSpec } from '../src/lib/validateSpec';
+import { autofix } from '../src/lib/autofix';
+import { smokeTest } from '../src/lib/smokeTest';
 
 interface Case {
   prompt: string;
@@ -111,11 +113,21 @@ async function runCase(item: Case, thinking: ThinkingLevel, maxRepairs: number):
     const validation = parsed ? validateSpec(parsed) : { ok: false as const, errors: ['ответ не является JSON'] };
 
     if (validation.ok) {
-      const expectationFailure = parsed && item.expect ? item.expect(parsed) : null;
-      return {
-        prompt: item.prompt, firstPass: round === 0, attempts: round + 1,
-        errors: firstErrors, expectationFailure, ms: Date.now() - started, ...meta,
-      };
+      // Тот же порядок, что в проде: механическая починка, потом прогон.
+      const fixed = autofix(validation.spec);
+      const smoke = smokeTest(fixed.spec);
+
+      if (smoke.ok) {
+        const expectationFailure = item.expect ? item.expect(fixed.spec as unknown as Record<string, unknown>) : null;
+        return {
+          prompt: item.prompt, firstPass: round === 0, attempts: round + 1,
+          errors: firstErrors, expectationFailure, ms: Date.now() - started, ...meta,
+        };
+      }
+
+      if (round === 0) firstErrors = smoke.issues;
+      prompt = buildRepairPrompt(JSON.stringify(fixed.spec), smoke.issues);
+      continue;
     }
 
     if (round === 0) firstErrors = validation.errors;
@@ -195,7 +207,11 @@ function report(outcomes: Outcome[]): void {
   const reasons = new Map<string, number>();
   for (const outcome of outcomes) {
     for (const error of outcome.errors) {
-      const key = error.split(':')[0].slice(0, 60);
+      // Группируем по сути ошибки, а не по пути в дереве: раньше в отчёте
+      // было десять строк вида ui.children[4].onPress[0] и по ним нельзя
+      // было понять, что именно чинить в промпте.
+      const message = error.split(': ').slice(1).join(': ') || error;
+      const key = message.replace(/"[^"]*"/g, '"…"').slice(0, 70);
       reasons.set(key, (reasons.get(key) ?? 0) + 1);
     }
   }

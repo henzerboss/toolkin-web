@@ -8,6 +8,8 @@ export const runtime = 'nodejs';
 interface Body {
   prompt?: string;
   locale?: string;
+  /** Идентификаторы фич, оставленных пользователем. Пусто — собираем как раньше. */
+  features?: string[];
 }
 
 export async function OPTIONS(req: Request) {
@@ -39,7 +41,11 @@ export async function POST(req: Request) {
     return json({ error: 'insufficient_credits', credits: account!.credits, price }, 402, headers);
   }
 
-  const result = await generateFromRequest(prompt, locale);
+  const features = Array.isArray(body.features)
+    ? body.features.filter((item) => typeof item === 'string').slice(0, 10)
+    : undefined;
+
+  const result = await generateFromRequest(prompt, locale, features);
 
   if (!result.ok) {
     return json(
@@ -63,6 +69,7 @@ export async function POST(req: Request) {
       spec: result.spec,
       attempts: result.attempts,
       kind: result.plan?.kind,
+      features: result.features,
       credits: charged.credits,
     },
     200,

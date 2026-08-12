@@ -76,7 +76,10 @@ export async function POST(req: Request) {
     version: Math.max(current.spec.version + 1, result.spec!.version),
   };
 
-  const charged = await charge(account!.appUserId, 'refine', price, { attempts: result.attempts });
+  const charged = await charge(account!.appUserId, 'refine', price, {
+    attempts: result.attempts,
+    tokens: result.usage,
+  });
 
   return json(
     {

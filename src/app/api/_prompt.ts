@@ -194,6 +194,7 @@ interface PromptPlan {
   needsStructuredAi: boolean;
   summary: string;
   title: string;
+  features?: { id: string; title: string; description: string }[];
 }
 
 /** Какие разделы нужны этому плану. Без плана берутся все. */
@@ -302,11 +303,23 @@ export function buildGeneratePrompt(prompt: string, locale: string, plan?: Promp
       `  record history: ${plan.needsRecords ? 'yes' : 'no'}`,
       `  structured model answer: ${plan.needsStructuredAi ? 'yes — use llm.ask with fields' : 'no'}`,
       `  summary: ${plan.summary}`,
-      '',
-      'Use exactly these capabilities and build the screen from these components.',
     );
   }
 
+  if (plan?.features?.length) {
+    // Фичи идут последними и списком: человек уже согласился на этот набор
+    // галочками, поэтому это не пожелание, а обязательство.
+    lines.push(
+      '',
+      'The person picked these features. Every one of them must work in the built utility —',
+      'their presence is checked automatically and a missing one is a failure:',
+      ...plan.features.map((feature) => `  - ${feature.title}: ${feature.description}`),
+      '',
+      'Do not add anything beyond this list. Extra blocks make the single screen unusable.',
+    );
+  }
+
+  lines.push('', 'Use exactly these capabilities and build the screen from these components.');
   lines.push('Build one utility that solves exactly this request.', 'Return the spec JSON only.');
   return lines.join('\n');
 }
