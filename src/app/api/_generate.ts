@@ -34,7 +34,15 @@ export interface SpecAttempt {
 
 
 const parsedRepairs = Number.parseInt(process.env.TOOLKIN_MAX_REPAIRS ?? '', 10);
-const MAX_REPAIRS = Number.isFinite(parsedRepairs) && parsedRepairs >= 0 && parsedRepairs <= 5 ? parsedRepairs : 2;
+const MAX_REPAIRS = Number.isFinite(parsedRepairs) && parsedRepairs >= 0 && parsedRepairs <= 1 ? parsedRepairs : 1;
+
+export type GenerationProgressStage = 'building' | 'validating' | 'repairing' | 'finalizing';
+export type GenerationProgress = (stage: GenerationProgressStage) => void | Promise<void>;
+
+async function reportProgress(callback: GenerationProgress | undefined, stage: GenerationProgressStage): Promise<void> {
+  if (!callback) return;
+  try { await callback(stage); } catch (error) { console.warn('[toolkin.generate.progress]', error); }
+}
 
 /**
  * Модель ошибается в спеке примерно в каждом пятом ответе, и почти всегда
@@ -48,6 +56,7 @@ export async function generateSpec(
   thinking: ThinkingLevel = THINKING.generate,
   purpose: Purpose = 'generate',
   plan?: Plan,
+  onProgress?: GenerationProgress,
 ): Promise<SpecAttempt> {
   let prompt = initialPrompt;
   let attempts = 0;
@@ -62,6 +71,7 @@ export async function generateSpec(
 
   for (let round = 0; round <= MAX_REPAIRS; round++) {
     attempts += 1;
+    await reportProgress(onProgress, round === 0 ? 'building' : 'repairing');
 
     const result = await callGemini(system, prompt, { jsonOnly: true, thinking, purpose });
     if (result.usage) {
@@ -81,6 +91,7 @@ export async function generateSpec(
       continue;
     }
 
+    await reportProgress(onProgress, 'validating');
     const normalized = normalizeGeneratedSpec(parsed);
     const validation = validateSpec(normalized.spec);
 
@@ -115,6 +126,7 @@ export async function generateSpec(
         continue;
       }
 
+      await reportProgress(onProgress, 'finalizing');
       return {
         ok: true,
         spec: fixed.spec,
@@ -158,6 +170,7 @@ export async function generateFromRequest(
   selectedFeatures: string[],
   customFeatures: string[],
   planToken: string,
+  onProgress?: GenerationProgress,
 ): Promise<SpecAttempt> {
   const sourcePlan = verifyPlanToken(planToken, request, locale) ?? undefined;
   if (!sourcePlan) return { ok: false, attempts: 0, error: 'plan_invalid' };
@@ -198,10 +211,13 @@ export async function generateFromRequest(
       const fixed = autofix(validated.spec);
       const smoke = smokeTest(fixed.spec);
       const checked = smoke.ok ? checkFeatures(fixed.spec, plan.features) : null;
-      if (checked?.ok) return {
+      if (checked?.ok) {
+        await reportProgress(onProgress, 'finalizing');
+        return {
         ok: true, spec: fixed.spec, attempts: 0, cached: true, plan,
-        autofixed: [...normalized.applied, ...fixed.applied], features: checked.implemented, missingFeatures: [],
-      };
+          autofixed: [...normalized.applied, ...fixed.applied], features: checked.implemented, missingFeatures: [],
+        };
+      }
     }
   }
 
@@ -212,7 +228,7 @@ export async function generateFromRequest(
   const hasCustomFeatures = plan.features.some((feature) => feature.id.startsWith('user-custom-'));
   const system = buildSystemInstruction(locale, hasCustomFeatures ? undefined : plan);
   const prompt = buildGeneratePrompt(request, locale, plan);
-  const result = await generateSpec(system, prompt, THINKING.generate, 'generate', plan);
+  const result = await generateSpec(system, prompt, THINKING.generate, 'generate', plan, onProgress);
 
   if (result.ok && result.spec) await writeCache(request + cacheSuffix, locale, result.spec, plan.kind);
   return { ...result, plan };

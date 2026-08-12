@@ -30,7 +30,8 @@ npx tsx test-api.ts
 | Метод | Путь | Назначение | Цена |
 |---|---|---|---|
 | POST | `/api/plan` | запрос → Product Plan + подписанный `planToken` | — |
-| POST | `/api/generate` | подтверждённый plan → Spec v2 | 5 кредитов |
+| POST | `/api/generate` | создать durable generation job | списывается после успеха |
+| GET | `/api/generate/status?jobId=…` | статус/progress/result generation job | — |
 | POST | `/api/refine` | спека + правка → новая версия | 2 кредита |
 | POST | `/api/ask` | экшен `llm.ask` внутри утилиты | 1 кредит |
 | GET | `/api/credits` | баланс, лимиты, актуальные цены | — |
@@ -50,15 +51,13 @@ request
   → Product Plan (features + acceptance criteria + screens + component gaps)
   → HMAC-signed planToken
   → user feature selection / custom features
-  → exact immutable Product Plan
-  → UX/AppSpec v2 generation
-  → validateSpec
-  → autofix
-  → behavioral smokeTest (fresh + filled)
+  → POST /generate → durable PostgreSQL GenerationJob → 202 jobId
+  → background UX/AppSpec v2 generation
+  → validateSpec → autofix → behavioral smokeTest
   → checkFeatures(featureEvidence + exact requirements)
-  → repair loop
-  → credits charge
-  → client
+  → at most one semantic repair round
+  → credits charge only after success
+  → client polls /generate/status and receives result
 ```
 
 **План теперь является контрактом, а не подсказкой.** `/api/plan` возвращает
@@ -74,14 +73,20 @@ expiration, locale и hash исходного запроса и строит п�
 Cache key включает fingerprint фактически согласованного плана и выбранных
 фичей, поэтому спека от другого плана не может попасть в ответ из кэша.
 
-**Structured JSON transport.** Product Plan, generation и refine идут через текущий
-Gemini Interactions API с `response_format` (`application/json` + JSON Schema). Это
-не просто просьба модели «верни JSON»: провайдер сам принуждает ответ к JSON-объекту.
-Для полной Spec v2 используется широкий envelope-schema, а глубокая семантика после
-этого проверяется Toolkin validator/smoke/feature-contract. Генерация и refine имеют
-отдельный output budget 32768 tokens, чтобы многоэкранная спека не обрывалась на 8k.
-Planner сохраняет JSON/local fallbacks, поэтому экран выбора функций не становится
-тупиком при временном provider failure. Raw provider errors пользователю не показываются.
+**Planner resilient path.** JSON-планирование и AppSpec используют Gemini
+Interactions API с `response_format`/JSON Schema. Уровни thinking для этого API —
+`minimal/low/medium/high`. Если structured planning временно недоступен,
+`/api/plan` пробует JSON-only fallback, а затем возвращает консервативный
+локальный Product Plan. Raw provider error в клиент не показывается.
+
+**Generation job вместо длинного HTTP-запроса.** `/api/generate` больше не ждёт
+Gemini и repair-loop. Он за миллисекунды создаёт `GenerationJob` в Postgres и
+возвращает `202 + jobId`; мобильный клиент опрашивает `/api/generate/status`.
+Поэтому nginx, смена Wi‑Fi/LTE и стандартный mobile fetch timeout не уничтожают
+уже начатую генерацию. На единственном PM2-инстансе job запускается фоном; если
+процесс перезапустился, stale running job возвращается в очередь при следующем
+status-poll. Одновременно для одного аккаунта допускается только одна generation
+job, чтобы двойной tap не удваивал расходы на модель.
 
 **Product Plan описывает результат, а не только компоненты.** Для каждой feature
 есть acceptance criteria и точные механические requirements. План также
@@ -154,7 +159,7 @@ probe-промптов**. Поэтому правки компонентов, э
 12 000. Плюс дешёвая модель на планирование и на ответы внутри утилит.
 
 **Учёт расхода.** Фактические токены каждой генерации пишутся в `Ledger.meta`,
-включая токены размышления — при `thinkingLevel=high` они составляют заметную
+включая токены размышления — даже при `thinking_level=medium` они могут составлять заметную
 долю, и без отдельного учёта счёт выглядит необъяснимым.
 
 ```sql

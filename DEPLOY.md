@@ -17,19 +17,6 @@
 Порт наружу не выставляется — CloudPanel настраивает nginx как обратный прокси
 на `127.0.0.1:3010`.
 
-Для генерации Spec v2 дайте reverse proxy запас по времени. В CloudPanel →
-Vhost Editor для `toolkin.app` в `location /`/proxy-блоке должны быть:
-
-```nginx
-client_max_body_size 8m;
-proxy_connect_timeout 15s;
-proxy_send_timeout 150s;
-proxy_read_timeout 150s;
-```
-
-`client_max_body_size` нужен для camera→AI, а 150 секунд — для сложной генерации/refine.
-Мобильный клиент ждёт эти операции до 120 секунд.
-
 ## 2. DNS — до выпуска сертификата
 
 У регистратора две A-записи на IP сервера:
@@ -148,9 +135,11 @@ npx prisma migrate deploy
 
 `20260812090000_production_baseline` сделана idempotent: она подходит и для
 чистой базы, и для серверов, которые раньше были инициализированы локальным
-`migrate dev`. При переходе со старой схемы существующие аккаунты не получают
-welcome-кредиты повторно; новые аккаунты по-прежнему обслуживаются текущей
-логикой `welcomeGranted`.
+`migrate dev`. Следующая миграция `20260812143000_generation_jobs` добавляет
+`GenerationJob` для асинхронной генерации. Она не меняет баланс, Ledger или
+существующие спеки. При переходе со старой схемы существующие аккаунты не
+получают welcome-кредиты повторно; новые аккаунты по-прежнему обслуживаются
+текущей логикой `welcomeGranted`.
 
 Перед первой миграцией существующей production-базы всё равно сделайте backup.
 `npm run build` вызывает `prisma generate` перед Next.js build — Prisma Client
@@ -219,6 +208,27 @@ curl -s "localhost:3010/api/app-version?platform=ios&version=1.0.0"
 и получается `umask 007export PATH=...`. Проверяйте `tail -3 ~/.bashrc`, а
 добавляйте через `printf '\n%s\n' 'строка' >> ~/.bashrc`.
 
+
+### Асинхронная генерация
+
+Создание приложения больше не держит HTTPS-запрос открытым до окончания Gemini.
+`POST /api/generate` возвращает `202 + jobId`, а мобильный клиент опрашивает
+`GET /api/generate/status?jobId=…`. Состояние лежит в Postgres, поэтому обычный
+mobile/nginx timeout не отменяет работу. Отдельный Redis/worker не нужен: при
+одном PM2 instance job запускается внутри постоянного Node-процесса. Если PM2
+перезапустился, stale job автоматически возвращается в очередь при следующем
+status-poll.
+
+Для диагностики очереди:
+
+```bash
+psql "$DATABASE_URL" -c 'select "status", "stage", count(*) from "GenerationJob" group by 1,2 order by 1,2;'
+psql "$DATABASE_URL" -c 'select "id", "status", "stage", "attempts", "error", "updatedAt" from "GenerationJob" order by "createdAt" desc limit 10;'
+```
+
+Status polling исключён из обычного IP rate limit: это дешёвое чтение по
+`jobId + X-App-User-Id`, иначе минутная генерация сама съедала бы часовой лимит.
+
 ## 8. Приложение
 
 Один домен обслуживает и лендинг, и API — отдельный `api.` поддомен на своём
@@ -274,6 +284,17 @@ npx prisma migrate deploy
 pm2 restart toolkin --update-env
 ```
 
+Если `.env` был создан из предыдущего архива, обновите latency-параметры вручную
+(замена `.env.example` существующий `.env` не меняет):
+
+```env
+TOOLKIN_THINKING_GENERATE=medium
+TOOLKIN_MAX_REPAIRS=1
+TOOLKIN_ATTEMPTS_PER_MODEL=1
+TOOLKIN_MAX_MODELS_PER_CALL=2
+TOOLKIN_AI_REQUEST_TIMEOUT_MS=90000
+```
+
 На сервере именно `migrate deploy`, а не `migrate dev`: он применяет только
 проверенные миграции из архива. Если build или тесты упали, до миграции и
 рестарта не доходите — текущая production-версия продолжит работать.
@@ -304,13 +325,14 @@ pm2 restart toolkin
 curl -s -H "X-Client-Token: $TOOLKIN_CLIENT_TOKEN" https://toolkin.app/api/health | python3 -m json.tool
 ```
 
-Роут больше не пингует каждую модель отдельным платным `generateContent` вызовом.
-Он читает список доступных моделей и делает один маленький **planner probe через тот же
-Gemini Interactions API**, который использует production pipeline: `response_format`
-с `application/json` + JSON Schema и `thinking_level`. Перед переключением трафика
-должны быть `planWorking: true`, `plannerProbe.ok: true`,
-`plannerProbe.transport: "interactions"` и `productionConfigOk: true`.
-`suggestions` показывает модели, которые ключ реально видит. `productionConfigOk` в production подтверждает наличие
+Роут получает список доступных моделей и делает **один** маленький настоящий
+planner probe через тот же Gemini Interactions transport, который используется
+для structured JSON. Он не генерирует тестовые приложения и не пингует каждую
+модель отдельным платным запросом. Перед переключением трафика должны быть
+`aiJsonTransport: "interactions"`, `generationTransport: "durable-job-polling"`,
+`generationJobsReady: true`, `planWorking: true`, `plannerProbe.ok: true` и
+`productionConfigOk: true`. `working`/`suggestions` показывают, какие модели
+видит именно ваш ключ. `productionConfigOk` в production подтверждает наличие
 `DATABASE_URL`, `TOOLKIN_CLIENT_TOKEN`, отдельного `TOOLKIN_PLAN_SECRET` и
 `TOOLKIN_REVENUECAT_WEBHOOK_SECRET`.
 

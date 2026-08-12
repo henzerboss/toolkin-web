@@ -8,7 +8,7 @@ const parseModels = (value: string | undefined, fallback: string): string[] =>
     .map((model) => model.trim())
     .filter(Boolean);
 
-const DEFAULT_MODEL_CASCADE = 'gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite';
+const DEFAULT_MODEL_CASCADE = 'gemini-3.6-flash,gemini-3.5-flash';
 const GLOBAL_MODELS = process.env.TOOLKIN_MODELS;
 
 export const MODELS: string[] = parseModels(GLOBAL_MODELS, DEFAULT_MODEL_CASCADE);
@@ -54,14 +54,16 @@ const parseThinking = (value: string | undefined, fallback: ThinkingLevel): Thin
 
 export const THINKING: Record<Purpose, ThinkingLevel> = {
   plan: parseThinking(process.env.TOOLKIN_THINKING_PLAN, 'medium'),
-  generate: parseThinking(process.env.TOOLKIN_THINKING_GENERATE, 'high'),
+  generate: parseThinking(process.env.TOOLKIN_THINKING_GENERATE, 'medium'),
   refine: parseThinking(process.env.TOOLKIN_THINKING_REFINE, 'medium'),
   ask: parseThinking(process.env.TOOLKIN_THINKING_ASK, 'low'),
   translate: 'low',
 };
 
-const ATTEMPTS_PER_MODEL = parsePositiveInt(process.env.TOOLKIN_ATTEMPTS_PER_MODEL, 2, 1, 4);
+const ATTEMPTS_PER_MODEL = parsePositiveInt(process.env.TOOLKIN_ATTEMPTS_PER_MODEL, 1, 1, 2);
+const MAX_MODELS_PER_CALL = parsePositiveInt(process.env.TOOLKIN_MAX_MODELS_PER_CALL, 2, 1, 3);
 const RETRY_DELAY_MS = 150;
+const AI_REQUEST_TIMEOUT_MS = parsePositiveInt(process.env.TOOLKIN_AI_REQUEST_TIMEOUT_MS, 90_000, 10_000, 180_000);
 
 export function cors(origin: string) {
   return {
@@ -103,7 +105,7 @@ export interface Guard {
   headers: Record<string, string>;
 }
 
-export async function guard(req: Request, options: { requireAccount?: boolean } = {}): Promise<Guard> {
+export async function guard(req: Request, options: { requireAccount?: boolean; rateLimit?: boolean } = {}): Promise<Guard> {
   const origin = req.headers.get('origin') ?? '';
   const headers = { 'Content-Type': 'application/json', ...cors(origin) };
 
@@ -113,7 +115,7 @@ export async function guard(req: Request, options: { requireAccount?: boolean } 
   }
 
   const ip = req.headers.get('x-forwarded-for')?.split(',')[0] ?? 'unknown';
-  if (!checkRateLimit(ip)) {
+  if (options.rateLimit !== false && !checkRateLimit(ip)) {
     return { ok: false, headers, response: json({ error: 'rate_limited' }, 429, headers) };
   }
 
@@ -186,6 +188,7 @@ async function callOnceInteractions(
 ): Promise<GeminiResult> {
   const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/interactions?key=${apiKey}`, {
     method: 'POST',
+    signal: AbortSignal.timeout(AI_REQUEST_TIMEOUT_MS),
     headers: {
       'Content-Type': 'application/json',
       // Explicitly document the schema generation the backend was implemented for.
@@ -264,6 +267,7 @@ async function callOnceGenerateContent(
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
   const res = await fetch(url, {
     method: 'POST',
+    signal: AbortSignal.timeout(AI_REQUEST_TIMEOUT_MS),
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       systemInstruction: { parts: [{ text: system }] },
@@ -315,7 +319,7 @@ export async function callGemini(
   if (!apiKey) return { ok: false, error: 'TOOLKIN_GEMINI_API_KEY missing' };
 
   const purpose = options.purpose ?? 'generate';
-  const models = MODELS_BY_PURPOSE[purpose] ?? MODELS;
+  const models = (MODELS_BY_PURPOSE[purpose] ?? MODELS).slice(0, MAX_MODELS_PER_CALL);
   const thinking = options.thinking ?? THINKING[purpose] ?? 'medium';
   const jsonOnly = options.jsonOnly !== false;
   const maxOutputTokens = OUTPUT_LIMITS[purpose];

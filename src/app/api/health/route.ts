@@ -1,5 +1,6 @@
 import { MODELS_BY_PURPOSE, callGemini, cors, guard, json } from '../_shared';
 import { PIPELINE_VERSION } from '@/lib/specCacheKey';
+import prisma from '@/lib/prisma';
 
 export const runtime = 'nodejs';
 
@@ -45,14 +46,25 @@ export async function GET(req: Request) {
     process.env.TOOLKIN_PLAN_SECRET &&
     process.env.TOOLKIN_REVENUECAT_WEBHOOK_SECRET
   );
+  let generationJobsReady = false;
+  let generationJobsError: string | null = null;
+  try {
+    await prisma.generationJob.findFirst({ select: { id: true } });
+    generationJobsReady = true;
+  } catch (error) {
+    generationJobsError = String(error).slice(0, 300);
+  }
   const planWorking = external.planner.ok;
-  const ok = planWorking && productionConfigOk;
+  const ok = planWorking && productionConfigOk && generationJobsReady;
 
   return json(
     {
       ok,
       pipelineVersion: PIPELINE_VERSION,
       aiJsonTransport: 'interactions',
+      generationTransport: 'durable-job-polling',
+      generationJobsReady,
+      generationJobsError,
       configured: CONFIGURED_MODELS,
       working: external.working,
       planWorking,
