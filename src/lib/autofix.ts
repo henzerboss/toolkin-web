@@ -133,11 +133,20 @@ export function autofix(spec: MiniAppSpec): AutofixResult {
     derived[key] = fixExpression(expression, applied);
   }
 
+  const screens = spec.screens
+    ? Object.fromEntries(Object.entries(spec.screens).map(([key, root]) => [key, fixNode(root, applied)]))
+    : undefined;
+  const components = spec.components
+    ? Object.fromEntries(Object.entries(spec.components).map(([key, definition]) => [key, { ...definition, template: fixNode(definition.template, applied) }]))
+    : undefined;
+
   return {
     spec: {
       ...spec,
       ...(spec.derived ? { derived } : {}),
-      ui: fixNode(spec.ui, applied),
+      ...(spec.ui ? { ui: fixNode(spec.ui, applied) } : {}),
+      ...(screens ? { screens } : {}),
+      ...(components ? { components } : {}),
     },
     applied: [...applied],
   };

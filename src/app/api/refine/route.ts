@@ -81,6 +81,8 @@ export async function POST(req: Request) {
     tokens: result.usage,
   });
 
+  if (!charged.ok) return json({ error: 'insufficient_credits', credits: charged.credits, price }, 402, headers);
+
   return json(
     {
       spec,

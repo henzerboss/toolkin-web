@@ -194,7 +194,10 @@ interface PromptPlan {
   needsStructuredAi: boolean;
   summary: string;
   title: string;
-  features?: { id: string; title: string; description: string }[];
+  navigation?: 'single' | 'stack' | 'tabs';
+  screens?: { id: string; title: string; purpose: string }[];
+  customComponents?: { name: string; purpose: string; strategy: 'compose' | 'extend' }[];
+  features?: { id: string; title: string; description: string; acceptanceCriteria?: string[] }[];
 }
 
 /** Какие разделы нужны этому плану. Без плана берутся все. */
@@ -222,63 +225,97 @@ export function buildSystemInstruction(locale: string, plan?: PromptPlan): strin
   const sections = sectionsFor(plan);
 
   const lines = [
-    'You build small single-screen utilities for a mobile app.',
-    'You do NOT write code. You return ONE JSON object — a declarative spec executed by a runtime.',
+    'You are a senior mobile product designer and declarative app builder.',
+    'You do NOT write React Native or native code. Return ONE JSON object executed by a safe runtime.',
     'Reply with raw JSON only: no markdown, no backticks, no explanations.',
     '',
-    `LANGUAGE: write every label, title, button caption and hint in ${lang} (locale ${locale}).`,
-    'Keys of state and derived stay in latin camelCase.',
+    `LANGUAGE: write every user-facing label, title, button caption, empty state and hint in ${lang} (locale ${locale}).`,
+    'State, derived, collection, screen and prop keys stay in latin camelCase/kebab-case where appropriate.',
     'The examples below use English labels — copy their structure, not their language.',
     '',
-    'SPEC SHAPE:',
+    'V2 SPEC SHAPE (generators MUST emit schemaVersion 2):',
     '{',
-    '  "schemaVersion": 1,',
-    '  "id": "kebab-case-id",',
-    '  "version": 1,',
+    '  "schemaVersion": 2,',
+    '  "id": "kebab-case-id", "version": 1,',
     `  "manifest": { "name": "short name, max 24 chars", "icon": "icon name", "color": "blue|green|amber|violet|rose|teal", "locale": "${locale}" },`,
-    '  "capabilities": [...],',
+    '  "capabilities": [],',
     '  "state": { "key": initialValue },',
-    '  "persist": ["keys that survive closing the app"],',
+    '  "persist": ["state keys that survive closing the app"],',
     '  "derived": { "name": "expression" },',
-    '  "records": { "fields": [{"key","label","kind"}], "valueField": "key" },',
-    '  "ui": { "type": "Screen", "children": [...] }',
+    '  "records": { "fields": [...], "valueField": "field" },',
+    '  "collections": { "expenses": { "fields": [...], "valueField": "amount" } },',
+    '  "components": { "ExpenseCard": { "description": "...", "props": [...], "template": {...} } },',
+    '  "screens": { "home": { "type": "Screen", "children": [...] }, "history": {...} },',
+    '  "navigation": { "start": "home", "mode": "single|stack|tabs", "titles": {...}, "tabs": [...] },',
+    '  "design": { "density": "compact|comfortable", "cardStyle": "soft|outlined|flat", "radius": "soft|round" },',
+    '  "featureEvidence": { "feature-id": { "screens": [...], "components": [...], "actions": [...], "capabilities": [...] } }',
     '}',
     '',
-    'COMPONENTS (nothing else exists):',
+    'CORE COMPONENTS:',
     describeComponents(),
+    '',
+    'SAFE APP-SPECIFIC COMPONENTS:',
+    '- If ideal UX needs a control that core components do not express well, define an app-local PascalCase component in spec.components.',
+    '- A custom component is DECLARATIVE ONLY. It is composed from core/custom components; never put React/React Native source in it.',
+    '- props is [{"name":"amount","kind":"value|text|bind","required":true,"default":...}].',
+    '- Use component props inside its template as {{propName}}. A bind prop may be used as "bind":"{{bindKey}}" and action key:"{{bindKey}}".',
+    '- Instantiate it as {"type":"ExpenseCard","props":{"id":"{{expenseId}}","amount":"{{expenseAmount}}"}}.',
+    '- Prefer REUSE core -> COMPOSE custom -> EXTEND via a custom wrapper. Use Sandbox only for a genuine canvas/gesture capability gap.',
+    '- Do not redefine generic Text/Button/Card just to change styling; the design system owns consistency.',
+    '',
+    'REPEAT / RECORD-DRIVEN UI:',
+    '- Repeat source is an ARRAY EXPRESSION, not a template: {"type":"Repeat","source":"records","collection":"expenses","as":"expense","children":[...]}',
+    '- Each stored record exposes expense, expenseIndex and flattened locals such as expenseId, expenseCreatedAt, expenseCollection AND each domain field from values, e.g. expenseAmount and expenseCategory.',
+    '- This flattening exists because dot notation is intentionally unsupported. Use those locals in repeated custom cards and records.update/remove actions.',
+    '- Keep repeated custom controls simple and cap Repeat with limit when history can grow.',
     '',
     'ACTIONS (onPress is an array of steps, executed in order):',
     describeActions(),
     '',
+    'NAVIGATION:',
+    '- nav.go screen must name an existing spec.screens key. nav.back works for stack flow; nav.home returns to navigation.start.',
+    '- tabs are only for 2-4 peer destinations. Add/edit/detail screens should normally use nav.go from a stack flow, not tabs.',
+    '',
     'EXPRESSIONS:',
     'Arithmetic, comparisons, && || !, ternary a ? b : c, literals.',
     `Functions: ${FUNCTION_NAMES.join(', ')}. No other functions exist.`,
-    'You may reference only state keys, derived names and these built-ins:',
+    'Aggregate signatures are exact:',
+    '  valuesBy(records, "expenses", "amount")',
+    '  sumBy(records, "expenses", "amount")',
+    '  avgBy(records, "expenses", "amount")',
+    '  countBy(records, "expenses")',
+    '  sumWhere(records, "expenses", "amount", "category", "Food")',
+    '  countWhere(records, "expenses", "category", "Food")',
+    '  uniqueBy(records, "expenses", "category")',
+    '  latestBy(records, "expenses", "amount")',
+    'You may reference state keys, derived names, custom-component locals and these built-ins:',
     BUILTIN_SCOPE.join(', ') + '.',
-    'Dot notation and index access are NOT supported.',
+    'Dot notation and index access are NOT supported. Use the provided aggregate functions or flattened locals.',
     '',
     'TEMPLATES AND FORMATTING:',
-    'Text properties support {{expression | filter}} substitution.',
+    'Text/action properties support {{expression | filter}} substitution.',
     `Filters: ${FILTER_NAMES.join(', ')}.`,
-    'NEVER format numbers yourself. Money, percentages, dates and durations go through a filter,',
-    'otherwise the screen shows 880.0000000000001 and the currency will not match the device.',
-    'Hide a block until data is ready: "visible": "bill > 0" on any node.',
+    'NEVER manually format numbers. Money, percentages, dates and durations go through filters.',
+    'Use visible:"condition" for conditional UI. Design explicit empty states for persistent lists.',
     '',
   ];
 
-  for (const section of sections) {
-    lines.push(...PLAYBOOK[section], '');
-  }
+  for (const section of sections) lines.push(...PLAYBOOK[section], '');
 
   lines.push(
-    'QUALITY RULES:',
-    '1. Exactly one Stat or ProgressRing per screen — the main result of the utility.',
-    '2. Declare only the capabilities you actually use in actions. An extra permission is a rejection.',
-    '3. Every bind must exist in state. A Select initial value must match one of options.value.',
-    '4. The utility must be useful the moment it opens: put sensible defaults, not zeros everywhere.',
-    '5. Keep it to 4–8 nodes. A utility is one screen, not an application.',
-    '6. Put settings the person adjusts once (goal, portion size, units) into persist.',
-    '7. If the result is worth copying or sending, add a clipboard.set or share button.',
+    'PRODUCT / UX QUALITY RULES:',
+    '1. Implement the Product Plan outcomes, not merely its component names. Every selected feature must satisfy its acceptance criteria.',
+    '2. Start from the ideal mobile flow. Do not cram unrelated tasks into one screen just because a core component exists.',
+    '3. Use 1-4 screens. A simple calculator should stay one screen; trackers may use Home/Add/History/Settings when that materially improves use.',
+    '4. Preserve a clear hierarchy: one obvious primary action per task, secondary actions quieter, related controls grouped in Card/Section/Stack.',
+    '5. Use sensible initial values and explicit empty/error/loading states. A fresh install must be understandable before any data exists.',
+    '6. Mobile UX is enforced: every input/toggle/select/date control has a short label; Select uses 2-12 unique short options; Row with more than 3 children must wrap; Table has at most 3 short columns. Use Grid/Stack/Card instead of dense horizontal UI.',
+    '7. Declare only capabilities actually used. Extra permissions are validation failures.',
+    '8. Every bind must resolve to a state key (directly or through a custom bind prop). Select initial value must match an option.',
+    '9. Put one-time settings/preferences in persist; put user-created history in records/collections, not ad-hoc state arrays.',
+    '10. Use featureEvidence for EVERY selected feature. Evidence must point to the real screens/components/actions/capabilities that implement it.',
+    '11. Never invent unsupported functions/actions/components. If core UX is insufficient, build a safe declarative custom component instead.',
+    '12. If a task needs copy/share, add it only when it genuinely helps; do not add decorative features just to fill a screen.',
   );
 
   return lines.join('\n');
@@ -295,32 +332,48 @@ export function buildGeneratePrompt(prompt: string, locale: string, plan?: Promp
   if (plan) {
     lines.push(
       '',
-      'The plan is already decided. Follow it exactly:',
+      'IMMUTABLE PRODUCT PLAN. This is the exact plan the person reviewed; do not reinterpret or replace it:',
       `  kind: ${plan.kind}`,
       `  title: ${plan.title}`,
-      `  capabilities: ${plan.capabilities.join(', ') || '(none)'}`,
-      `  components to use: ${plan.components.join(', ')}`,
-      `  record history: ${plan.needsRecords ? 'yes' : 'no'}`,
-      `  structured model answer: ${plan.needsStructuredAi ? 'yes — use llm.ask with fields' : 'no'}`,
       `  summary: ${plan.summary}`,
+      `  navigation: ${plan.navigation ?? 'single'}`,
+      `  capabilities allowed/required by the selected outcomes: ${plan.capabilities.join(', ') || '(none)'}`,
+      `  likely core building blocks (hints, NOT a whitelist): ${plan.components.join(', ') || '(none)'}`,
+      `  persistent record history: ${plan.needsRecords ? 'yes' : 'no'}`,
+      `  structured model answer: ${plan.needsStructuredAi ? 'yes — use llm.ask fields for typed values' : 'no'}`,
     );
+    if (plan.screens?.length) {
+      lines.push('  planned screens:', ...plan.screens.map((screen) => `    - ${screen.id}: ${screen.title} — ${screen.purpose}`));
+    }
+    if (plan.customComponents?.length) {
+      lines.push(
+        '  component gap analysis:',
+        ...plan.customComponents.map((component) => `    - ${component.name} [${component.strategy}]: ${component.purpose}`),
+        '  Implement these as safe spec.components when the planned UX still needs them. You may omit one only if a core component is objectively equivalent without UX loss.',
+      );
+    }
   }
 
   if (plan?.features?.length) {
-    // Фичи идут последними и списком: человек уже согласился на этот набор
-    // галочками, поэтому это не пожелание, а обязательство.
     lines.push(
       '',
-      'The person picked these features. Every one of them must work in the built utility —',
-      'their presence is checked automatically and a missing one is a failure:',
-      ...plan.features.map((feature) => `  - ${feature.title}: ${feature.description}`),
+      'SELECTED FEATURES — hard acceptance contract. Every item must work end-to-end:',
+      ...plan.features.flatMap((feature) => [
+        `  - [${feature.id}] ${feature.title}: ${feature.description}`,
+        ...(feature.acceptanceCriteria ?? []).map((criterion) => `      acceptance: ${criterion}`),
+      ]),
       '',
-      'Do not add anything beyond this list. Extra blocks make the single screen unusable.',
+      'For each feature id add featureEvidence pointing to concrete implementation. Screen-only evidence is not enough for a behavioral feature.',
+      'You may add supporting UX (empty states, navigation, labels, edit/delete controls) when it is necessary to make these features usable. Do not add unrelated product features.',
     );
   }
 
-  lines.push('', 'Use exactly these capabilities and build the screen from these components.');
-  lines.push('Build one utility that solves exactly this request.', 'Return the spec JSON only.');
+  lines.push(
+    '',
+    'Emit schemaVersion 2. Build the complete production-minded small app: screens, navigation, data model, safe custom components when useful, actions and evidence.',
+    'Keep the implementation as simple as possible WITHOUT sacrificing the selected outcomes or mobile usability.',
+    'Return the spec JSON only.',
+  );
   return lines.join('\n');
 }
 

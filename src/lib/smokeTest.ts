@@ -1,329 +1,51 @@
 import { ExpressionEvaluator } from '@/lib/expression';
-import type { JsonValue, MiniAppSpec, UiNode } from '@/lib/specTypes';
+import { getCollectionSchema, getScreenRoots, type JsonValue, type MiniAppSpec, type UiNode } from '@/lib/specTypes';
 
-/**
- * Пробный прогон спеки на сервере.
- *
- * Валидатор проверяет форму: компонент существует, bind объявлен, право
- * заявлено. Этого мало — прогон качества показал утилиты, прошедшие валидацию
- * и при этом неработающие. Форма может быть безупречной, а на экране NaN,
- * пустой результат или кнопка, которая ничего не меняет.
- *
- * Здесь спека исполняется по-настоящему: считаются derived, разворачиваются
- * шаблоны, нажимаются все кнопки, проверяется, что состояние изменилось и
- * что на экран попадают числа, а не «undefined». Найденное уходит в цикл
- * починки такими же инструктивными фразами, как и ошибки валидатора.
- *
- * Это не полноценный рантайм — здесь нет React, устройства и сети. Задача
- * скромнее: поймать то, что сломается у пользователя на первом же касании.
- */
+interface Issue { path:string; message:string; }
+function seedState(spec:MiniAppSpec):Record<string,JsonValue>{const state={...spec.state};for(const[k,v]of Object.entries(state))if(typeof v==='number'&&v===0)state[k]=1;return state;}
 
-interface Issue {
-  path: string;
-  message: string;
+class Simulator{
+ private state:Record<string,JsonValue>;private records:{id:string;createdAt:number;collection:string;values:Record<string,JsonValue>}[]=[];readonly issues:Issue[]=[];private currentScreen:string;
+ constructor(private readonly spec:MiniAppSpec,private readonly evaluator:ExpressionEvaluator,mode:'fresh'|'filled'='filled'){
+  this.state=mode==='fresh'?{...spec.state}:seedState(spec);this.currentScreen=spec.navigation?.start??Object.keys(getScreenRoots(spec))[0]??'main';
+  if(mode==='filled'&&(spec.records||Object.keys(spec.collections??{}).length)){const names=[...(spec.records?['default']:[]),...Object.keys(spec.collections??{})];for(const collection of names){const schema=getCollectionSchema(spec,collection);const values:Record<string,JsonValue>={};for(const field of schema?.fields??[])values[field.key]=field.kind==='number'?1:field.kind==='boolean'?true:field.kind==='date'?Date.now():field.kind==='image'?'file://sample.jpg':'sample';this.records.push({id:`seed-${collection}`,createdAt:Date.now(),collection,values});}}
+ }
+ get scope():Record<string,JsonValue>{
+  const flattened=this.records.map(r=>({...r.values,id:r.id,createdAt:r.createdAt,collection:r.collection})) as JsonValue[];
+  const scope:Record<string,JsonValue>={...this.state,nowMs:Date.now(),recordCount:this.records.length,recordValues:this.recordValues('default'),records:flattened,currentScreen:this.currentScreen,timerRunning:false,timerElapsed:0,timerRemaining:0,timerFinished:false,llmBusy:false,llmError:null};
+  for(const name of Object.keys(this.spec.collections??{})){const suffix=name.replace(/[^A-Za-z0-9]+(.)?/g,(_m,ch:string|undefined)=>ch?ch.toUpperCase():'');const cap=suffix.charAt(0).toUpperCase()+suffix.slice(1);scope[`recordCount${cap}`]=this.records.filter(r=>r.collection===name).length;scope[`recordValues${cap}`]=this.recordValues(name);}
+  for(const[key,expression]of Object.entries(this.spec.derived??{})){try{scope[key]=this.evaluator.evaluate(expression,scope);}catch(error){this.issues.push({path:`derived.${key}`,message:`expression fails at runtime: ${error instanceof Error?error.message:String(error)}`});scope[key]=null;}}
+  return scope;
+ }
+ private recordValues(collection:string):number[]{const field=getCollectionSchema(this.spec,collection)?.valueField;if(!field)return[];return this.records.filter(r=>r.collection===collection).map(r=>Number(r.values[field]??0));}
+ checkDerived():void{const scope=this.scope;for(const key of Object.keys(this.spec.derived??{})){const value=scope[key];if(typeof value==='number'&&!Number.isFinite(value))this.issues.push({path:`derived.${key}`,message:'evaluates to NaN or Infinity with normal input; guard the divisor or fix the formula'});}}
+ checkTemplate(source:string,path:string,locals:Record<string,JsonValue>={}):void{if(!source.includes('{{'))return;for(const match of source.matchAll(/\{\{([^}]+)\}\}/g)){const body=match[1],filtered=body.match(/^(.*[^|])\|\s*([A-Za-z]+)\s*$/),expression=(filtered?filtered[1]:body).trim(),filter=filtered?.[2];try{const value=this.evaluator.evaluate(expression,{...this.scope,...locals});if(typeof value==='number'&&!Number.isFinite(value))this.issues.push({path,message:`template {{${expression}}} shows NaN`});if(typeof value==='number'&&!filter&&!Number.isInteger(value))this.issues.push({path,message:`template {{${expression}}} prints a fractional number without a formatting filter`});}catch(error){this.issues.push({path,message:`template {{${expression}}} fails: ${error instanceof Error?error.message:String(error)}`});}}}
+ private truthyWhen(raw:JsonValue|undefined,locals:Record<string,JsonValue>):boolean{if(raw===undefined)return true;if(typeof raw!=='string')return Boolean(raw);try{const value=this.evaluator.evaluate(raw,{...this.scope,...locals});return value!==null&&value!==false&&value!==0&&value!=='';}catch(error){this.issues.push({path:'action.when',message:`condition fails: ${error instanceof Error?error.message:String(error)}`});return false;}}
+ private resolve(value:JsonValue|undefined,locals:Record<string,JsonValue>):JsonValue{if(typeof value!=='string')return value??null;const single=value.match(/^\{\{([^}|]+)\}\}$/);if(!single)return value;try{return this.evaluator.evaluate(single[1].trim(),{...this.scope,...locals});}catch{return null;}}
+ pressButton(node:UiNode,path:string,locals:Record<string,JsonValue>={}):void{
+  if(!Array.isArray(node.onPress))return;if(!node.onPress.length){this.issues.push({path,message:'button has an empty onPress and does nothing when tapped'});return;}const before=JSON.stringify({s:this.state,r:this.records,c:this.currentScreen});let observable=false;
+  for(const raw of node.onPress as unknown as Record<string,JsonValue>[]){if(!this.truthyWhen(raw.when,locals))continue;const action=String(raw.action??'');switch(action){case'state.set':{const key=String(this.resolve(raw.key,locals)??'');if(key in this.state)this.state[key]=this.resolve(raw.value,locals);break;}case'state.inc':{const key=String(this.resolve(raw.key,locals)??'');if(key in this.state)this.state[key]=Number(this.state[key]??0)+Number(this.resolve(raw.by??1,locals));break;}case'state.toggle':{const key=String(this.resolve(raw.key,locals)??'');if(key in this.state)this.state[key]=!this.state[key];break;}case'state.random':{const key=String(this.resolve(raw.key,locals)??'');if(key in this.state)this.state[key]=raw.chars?'sample':1;break;}case'records.add':{const collection=String(this.resolve(raw.collection??'default',locals)??'default');const values:Record<string,JsonValue>={};for(const[k,v]of Object.entries((raw.values??{}) as Record<string,JsonValue>)){const value=this.resolve(v,locals);values[k]=value;const field=getCollectionSchema(this.spec,collection)?.fields.find(x=>x.key===k);if(field?.kind==='number'&&typeof value==='string'&&Number.isNaN(Number(value)))this.issues.push({path:`${path}.records.add`,message:`"${k}" is numeric but receives non-numeric text`});}this.records.unshift({id:`smoke-${this.records.length}`,createdAt:Date.now(),collection,values});break;}case'records.update':{const id=String(this.resolve(raw.id,locals)??'');const row=this.records.find(r=>r.id===id);if(row&&raw.values&&typeof raw.values==='object')for(const[k,v]of Object.entries(raw.values as Record<string,JsonValue>))row.values[k]=this.resolve(v,locals);break;}case'records.remove':{const id=String(this.resolve(raw.id,locals)??'');this.records=this.records.filter(r=>r.id!==id);break;}case'records.clear':{const collection=raw.collection===undefined?null:String(this.resolve(raw.collection,locals));this.records=collection?this.records.filter(r=>r.collection!==collection):[];break;}case'nav.go':{const target=String(this.resolve(raw.screen,locals)??'');if(getScreenRoots(this.spec)[target])this.currentScreen=target;observable=true;break;}case'nav.back':case'nav.home':observable=true;break;default:if(action.startsWith('timer.')||action.startsWith('notify.')||['clipboard.set','share','haptics','toast','camera.capture','llm.ask','image.generate'].includes(action))observable=true;}
+  }
+  if(JSON.stringify({s:this.state,r:this.records,c:this.currentScreen})===before&&!observable)this.issues.push({path,message:'pressing this button changes nothing — the app will feel broken'});
+ }
 }
 
-const BUILTINS: Record<string, JsonValue> = {
-  nowMs: Date.now(),
-  recordCount: 0,
-  recordValues: [],
-  timerRunning: false,
-  timerElapsed: 0,
-  timerRemaining: 0,
-  timerFinished: false,
-  llmBusy: false,
-  llmError: null,
-};
-
-/** Значения-заглушки для полей, которые пользователь заполнит сам. */
-function seedState(spec: MiniAppSpec): Record<string, JsonValue> {
-  const state: Record<string, JsonValue> = { ...spec.state };
-
-  // Нули заменяем на единицу: половина утилит делит на введённое значение,
-  // и проверка на нулевом состоянии показала бы деление на ноль везде,
-  // хотя у пользователя такого не будет.
-  for (const [key, value] of Object.entries(state)) {
-    if (typeof value === 'number' && value === 0) state[key] = 1;
-  }
-  return state;
+function flattenLocals(alias:string,item:JsonValue,index:number):Record<string,JsonValue>{const locals:Record<string,JsonValue>={[alias]:item,[`${alias}Index`]:index};if(item&&typeof item==='object'&&!Array.isArray(item)){for(const[k,v]of Object.entries(item)){const safe=k.replace(/[^A-Za-z0-9_]/g,'');const cap=safe.charAt(0).toUpperCase()+safe.slice(1);locals[`${alias}${cap}`]=v;}const values=(item as Record<string,JsonValue>).values;if(values&&typeof values==='object'&&!Array.isArray(values))for(const[k,v]of Object.entries(values)){const safe=k.replace(/[^A-Za-z0-9_]/g,'');const cap=safe.charAt(0).toUpperCase()+safe.slice(1);locals[`${alias}${cap}`]=v;}}return locals;}
+function walkExpanded(spec:MiniAppSpec,sim:Simulator,node:UiNode,path:string,visit:(node:UiNode,path:string,locals:Record<string,JsonValue>)=>void,locals:Record<string,JsonValue>={},customStack:string[]=[]):void{
+ visit(node,path,locals);
+ const custom=spec.components?.[node.type];if(custom&&!customStack.includes(node.type)){const props=node.props&&typeof node.props==='object'&&!Array.isArray(node.props)?node.props as Record<string,JsonValue>:{};const next={...locals};for(const prop of custom.props??[]){const raw=props[prop.name]??prop.default??null;if(typeof raw==='string'){const single=raw.match(/^\{\{([^}|]+)\}\}$/);next[prop.name]=single?new ExpressionEvaluator().evaluateSafe(single[1].trim(),{...sim.scope,...locals}):raw;}else next[prop.name]=raw;}walkExpanded(spec,sim,custom.template,`${path}<${node.type}>`,visit,next,[...customStack,node.type]);}
+ if(node.type==='Repeat'&&typeof node.source==='string'){const value=new ExpressionEvaluator().evaluateSafe(node.source,{...sim.scope,...locals});const source=Array.isArray(value)&&value.length?value:[{id:'smoke-record',createdAt:Date.now(),collection:String(node.collection??'default'),values:{amount:1,category:'sample'}}];const alias=typeof node.as==='string'?node.as:'item';source.slice(0,2).forEach((item,index)=>{const repeatLocals={...locals,...flattenLocals(alias,item,index)};if(Array.isArray(node.children))node.children.forEach((child,i)=>walkExpanded(spec,sim,child,`${path}.repeat[${index}].children[${i}]`,visit,repeatLocals,customStack));});return;}
+ if(Array.isArray(node.children))node.children.forEach((child,index)=>walkExpanded(spec,sim,child,`${path}.children[${index}]`,visit,locals,customStack));
 }
-
-class Simulator {
-  private state: Record<string, JsonValue>;
-  private records: Record<string, JsonValue>[] = [];
-  readonly issues: Issue[] = [];
-
-  constructor(
-    private readonly spec: MiniAppSpec,
-    private readonly evaluator: ExpressionEvaluator,
-    /**
-     * 'fresh' — состояние ровно как при первом открытии, 'filled' — с
-     * подставленными значениями. Первый режим ловит NaN и пустые результаты
-     * на стартовом экране, второй — ошибки в формулах, которые проявляются
-     * только когда пользователь что-то ввёл.
-     */
-    mode: 'fresh' | 'filled' = 'filled',
-  ) {
-    this.state = mode === 'fresh' ? { ...spec.state } : seedState(spec);
-  }
-
-  get scope(): Record<string, JsonValue> {
-    const scope: Record<string, JsonValue> = {
-      ...this.state,
-      ...BUILTINS,
-      recordCount: this.records.length,
-      recordValues: this.recordValues(),
-    };
-
-    for (const [key, expression] of Object.entries(this.spec.derived ?? {})) {
-      try {
-        scope[key] = this.evaluator.evaluate(expression, scope);
-      } catch (error) {
-        this.issues.push({
-          path: `derived.${key}`,
-          message: `expression fails at runtime: ${error instanceof Error ? error.message : String(error)}`,
-        });
-        scope[key] = null;
-      }
-    }
-
-    return scope;
-  }
-
-  private recordValues(): number[] {
-    const field = this.spec.records?.valueField;
-    if (!field) return [];
-    return this.records.map((record) => Number(record[field] ?? 0));
-  }
-
-  /** Проверяет, что все derived дают осмысленные значения. */
-  checkDerived(): void {
-    const scope = this.scope;
-
-    for (const key of Object.keys(this.spec.derived ?? {})) {
-      const value = scope[key];
-
-      if (typeof value === 'number' && !Number.isFinite(value)) {
-        this.issues.push({
-          path: `derived.${key}`,
-          message:
-            'evaluates to NaN or Infinity with normal input. Guard the divisor with max(x, 1) ' +
-            'or check the formula',
-        });
-      }
-    }
-  }
-
-  /** Разворачивает шаблон и жалуется, если на экран попадёт мусор. */
-  checkTemplate(source: string, path: string): void {
-    if (!source.includes('{{')) return;
-
-    for (const match of source.matchAll(/\{\{([^}]+)\}\}/g)) {
-      const body = match[1];
-      const filtered = body.match(/^(.*[^|])\|\s*([A-Za-z]+)\s*$/);
-      const expression = (filtered ? filtered[1] : body).trim();
-      const filter = filtered?.[2];
-
-      let value: JsonValue;
-      try {
-        value = this.evaluator.evaluate(expression, this.scope);
-      } catch (error) {
-        this.issues.push({
-          path,
-          message: `template {{${expression}}} fails: ${error instanceof Error ? error.message : String(error)}`,
-        });
-        continue;
-      }
-
-      if (typeof value === 'number' && !Number.isFinite(value)) {
-        this.issues.push({ path, message: `template {{${expression}}} shows NaN on screen` });
-      }
-
-      // Число без фильтра выводится как 880.0000000000001 — это самая
-      // заметная для пользователя неряшливость и её видно только прогоном.
-      if (typeof value === 'number' && !filter && !Number.isInteger(value)) {
-        this.issues.push({
-          path,
-          message:
-            `template {{${expression}}} prints a fractional number without a filter. ` +
-            'Add | number, | money or | integer',
-        });
-      }
-    }
-  }
-
-  /** Выполняет шаги кнопки и проверяет, что что-то изменилось. */
-  pressButton(node: UiNode, path: string): void {
-    if (!Array.isArray(node.onPress)) return;
-
-    if (node.onPress.length === 0) {
-      this.issues.push({ path, message: 'button has an empty onPress and does nothing when tapped' });
-      return;
-    }
-
-    const before = JSON.stringify(this.state);
-    const recordsBefore = this.records.length;
-    let touchesDevice = false;
-
-    for (const raw of node.onPress as unknown as Record<string, JsonValue>[]) {
-      const action = String(raw.action ?? '');
-
-      if (raw.when !== undefined && typeof raw.when === 'string') {
-        try {
-          this.evaluator.evaluate(raw.when, this.scope);
-        } catch (error) {
-          this.issues.push({
-            path: `${path}.when`,
-            message: `condition fails: ${error instanceof Error ? error.message : String(error)}`,
-          });
-        }
-      }
-
-      const resolve = (value: JsonValue | undefined): JsonValue => {
-        if (typeof value !== 'string') return value ?? null;
-        const single = value.match(/^\{\{([^}|]+)\}\}$/);
-        if (!single) return value;
-        try {
-          return this.evaluator.evaluate(single[1].trim(), this.scope);
-        } catch {
-          return null;
-        }
-      };
-
-      switch (action) {
-        case 'state.set':
-          if (typeof raw.key === 'string') this.state[raw.key] = resolve(raw.value);
-          break;
-        case 'state.inc': {
-          const key = String(raw.key ?? '');
-          const delta = raw.by === undefined ? 1 : Number(resolve(raw.by));
-          this.state[key] = Number(this.state[key] ?? 0) + delta;
-          break;
-        }
-        case 'state.toggle':
-          if (typeof raw.key === 'string') this.state[raw.key] = !this.state[raw.key];
-          break;
-        case 'state.random':
-          if (typeof raw.key === 'string') this.state[raw.key] = raw.chars ? 'sample' : 1;
-          break;
-        case 'records.add': {
-          const values: Record<string, JsonValue> = {};
-          for (const [key, source] of Object.entries((raw.values ?? {}) as Record<string, JsonValue>)) {
-            const value = resolve(source);
-            values[key] = value;
-
-            // Число, пришедшее строкой — та самая причина нулей в истории.
-            const field = this.spec.records?.fields.find((item) => item.key === key);
-            if (field?.kind === 'number' && typeof value === 'string' && Number.isNaN(Number(value))) {
-              this.issues.push({
-                path: `${path}.records.add`,
-                message: `"${key}" is a number field but receives non-numeric text — the history will show 0`,
-              });
-            }
-          }
-          this.records.push(values);
-          break;
-        }
-        case 'records.clear':
-          this.records = [];
-          break;
-        default:
-          // Экшены устройства здесь не выполняются, но их наличие означает,
-          // что кнопка делает работу и без изменения состояния.
-          touchesDevice = true;
-      }
-    }
-
-    const changed = JSON.stringify(this.state) !== before || this.records.length !== recordsBefore;
-    if (!changed && !touchesDevice) {
-      this.issues.push({
-        path,
-        message: 'pressing this button changes nothing — the utility will feel broken',
-      });
-    }
-  }
-}
-
-function walk(node: UiNode, path: string, visit: (node: UiNode, path: string) => void): void {
-  visit(node, path);
-  if (Array.isArray(node.children)) {
-    node.children.forEach((child, index) => walk(child, `${path}.children[${index}]`, visit));
-  }
-}
-
-export interface SmokeResult {
-  ok: boolean;
-  issues: string[];
-}
-
-/**
- * Прогоняет спеку и возвращает проблемы в том же виде, что и валидатор:
- * человекочитаемыми инструкциями, готовыми уйти в цикл починки.
- */
-export function smokeTest(spec: MiniAppSpec): SmokeResult {
-  const evaluator = new ExpressionEvaluator();
-
-  // Первый экран проверяется отдельно: утилита, показывающая NaN до того,
-  // как пользователь что-то ввёл, выглядит сломанной сразу при открытии —
-  // и именно это чаще всего видит человек.
-  const fresh = new Simulator(spec, evaluator, 'fresh');
-  fresh.checkDerived();
-  walk(spec.ui, 'ui', (node, path) => {
-    for (const key of ['value', 'label', 'hint']) {
-      const raw = node[key];
-      if (typeof raw === 'string') fresh.checkTemplate(raw, `${path}.${key} (on first open)`);
-    }
-  });
-
-  const simulator = new Simulator(spec, evaluator);
-  simulator.checkDerived();
-
-  walk(spec.ui, 'ui', (node, path) => {
-    // Тексты, которые увидит пользователь.
-    for (const key of ['value', 'label', 'title', 'hint', 'readout', 'empty', 'placeholder']) {
-      const raw = node[key];
-      if (typeof raw === 'string') simulator.checkTemplate(raw, `${path}.${key}`);
-    }
-
-    // Выражения-условия.
-    for (const key of ['visible', 'disabled', 'progress', 'values']) {
-      const raw = node[key];
-      if (typeof raw !== 'string') continue;
-      try {
-        evaluator.compile(raw);
-      } catch (error) {
-        simulator.issues.push({
-          path: `${path}.${key}`,
-          message: `expression fails: ${error instanceof Error ? error.message : String(error)}`,
-        });
-      }
-    }
-
-    if (node.type === 'Button') simulator.pressButton(node, path);
-  });
-
-  // Утилита без единого показанного результата бесполезна, даже если валидна.
-  const serialized = JSON.stringify(spec.ui);
-  const hasSandbox = serialized.includes('"Sandbox"');
-  if (!hasSandbox && !/\{\{/.test(serialized)) {
-    simulator.issues.push({
-      path: 'ui',
-      message: 'nothing on the screen shows a computed value — the utility displays only static text',
-    });
-  }
-
-  // Дубликаты между двумя прогонами схлопываем: одна и та же формула
-  // ломается в обоих режимах, а модели важно разнообразие причин.
-  const seen = new Set<string>();
-  const issues: string[] = [];
-  for (const issue of [...fresh.issues, ...simulator.issues]) {
-    const line = `${issue.path}: ${issue.message}`;
-    const key = issue.message.slice(0, 60);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    issues.push(line);
-    if (issues.length >= 12) break;
-  }
-
-  return { ok: issues.length === 0, issues };
+export interface SmokeResult{ok:boolean;issues:string[];}
+export function smokeTest(spec:MiniAppSpec):SmokeResult{
+ const evaluator=new ExpressionEvaluator(),fresh=new Simulator(spec,evaluator,'fresh'),filled=new Simulator(spec,evaluator,'filled');fresh.checkDerived();filled.checkDerived();const roots=getScreenRoots(spec);
+ for(const[screen,root]of Object.entries(roots)){
+  walkExpanded(spec,fresh,root,`screens.${screen}`,(node,path,locals)=>{for(const key of['value','label','title','hint']){const raw=node[key];if(typeof raw==='string')fresh.checkTemplate(raw,`${path}.${key} (on first open)`,locals);}},{});
+  walkExpanded(spec,filled,root,`screens.${screen}`,(node,path,locals)=>{for(const key of['value','label','title','hint','readout','empty','placeholder']){const raw=node[key];if(typeof raw==='string')filled.checkTemplate(raw,`${path}.${key}`,locals);}for(const key of['visible','disabled','progress','values']){const raw=node[key];if(typeof raw==='string')try{evaluator.compile(raw);}catch(error){filled.issues.push({path:`${path}.${key}`,message:`expression fails: ${error instanceof Error?error.message:String(error)}`});}}if(node.type==='Button')filled.pressButton(node,path,locals);},{});
+ }
+ if(Object.keys(roots).length>4)filled.issues.push({path:'screens',message:'more than 4 generated screens is outside the production complexity budget'});
+ let nodeCount=0;for(const root of Object.values(roots))walkExpanded(spec,filled,root,'density',()=>{nodeCount++;});if(nodeCount>120)filled.issues.push({path:'ui',message:'the app is excessively dense; split or simplify the information architecture'});
+ const serialized=JSON.stringify({roots,components:spec.components});const hasInteraction=/"onPress"|"bind"|"Repeat"|"Calendar"|"Sandbox"/.test(serialized);const hasDynamic=/\{\{|"ProgressRing"|"ProgressBar"|"Chart"|"LineChart"|"PieChart"|"List"|"Table"|"Gallery"/.test(serialized);if(!hasInteraction&&!hasDynamic)filled.issues.push({path:'ui',message:'the app has neither meaningful interaction nor dynamic output'});
+ const seen=new Set<string>(),issues:string[]=[];for(const issue of[...fresh.issues,...filled.issues]){const line=`${issue.path}: ${issue.message}`;if(seen.has(line))continue;seen.add(line);issues.push(line);if(issues.length>=16)break;}return{ok:!issues.length,issues};
 }

@@ -13,31 +13,44 @@ const parseModels = (value: string | undefined, fallback: string): string[] =>
     .map((model) => model.trim())
     .filter(Boolean);
 
-export const MODELS: string[] = parseModels(process.env.TOOLKIN_MODELS, 'gemini-3.6-flash,gemini-3.1-flash-lite');
+const DEFAULT_MODEL_CASCADE = 'gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite';
+const GLOBAL_MODELS = process.env.TOOLKIN_MODELS;
+
+export const MODELS: string[] = parseModels(GLOBAL_MODELS, DEFAULT_MODEL_CASCADE);
 
 /**
- * Модели подобраны по задаче, а не одна на всё.
+ * Модели подобраны по задаче, а не одна на всё. TOOLKIN_MODELS остаётся
+ * глобальным override: если он задан, purpose-specific переменные наследуют
+ * именно его, пока не переопределены отдельно.
  *
- * Генерация случается редко и требовательна: там окупается старшая модель.
- * Ответы внутри утилит массовые и простые — им хватает lite, а разница в
- * задержке заметна пользователю напрямую. Планирование и перевод промпта
- * для картинки настолько узкие, что старшая модель там только тратит время.
+ * Product Plan и генерация определяют архитектуру приложения, поэтому здесь
+ * приоритет у более сильных моделей. Короткие ответы и перевод промпта для
+ * изображения высокочастотны и хорошо подходят для Flash-Lite.
  */
+const purposeModels = (specific: string | undefined, fallback: string): string[] =>
+  parseModels(specific ?? GLOBAL_MODELS, fallback);
+
 export const MODELS_BY_PURPOSE = {
-  plan: parseModels(process.env.TOOLKIN_MODELS_PLAN, MODELS.join(',')),
-  generate: parseModels(process.env.TOOLKIN_MODELS_GENERATE, MODELS.join(',')),
-  refine: parseModels(process.env.TOOLKIN_MODELS_REFINE, MODELS.join(',')),
-  ask: parseModels(process.env.TOOLKIN_MODELS_ASK, MODELS.join(',')),
-  translate: parseModels(process.env.TOOLKIN_MODELS_TRANSLATE, MODELS.join(',')),
+  plan: purposeModels(process.env.TOOLKIN_MODELS_PLAN, 'gemini-3.6-flash,gemini-3.5-flash-lite'),
+  generate: purposeModels(process.env.TOOLKIN_MODELS_GENERATE, DEFAULT_MODEL_CASCADE),
+  refine: purposeModels(process.env.TOOLKIN_MODELS_REFINE, DEFAULT_MODEL_CASCADE),
+  ask: purposeModels(process.env.TOOLKIN_MODELS_ASK, 'gemini-3.5-flash-lite'),
+  translate: purposeModels(process.env.TOOLKIN_MODELS_TRANSLATE, 'gemini-3.5-flash-lite'),
 } as const;
 
 export type Purpose = keyof typeof MODELS_BY_PURPOSE;
 
-const MAX_OUTPUT_TOKENS = Number.parseInt(process.env.TOOLKIN_MAX_OUTPUT_TOKENS ?? '8192', 10);
+const parsePositiveInt = (value: string | undefined, fallback: number, min: number, max: number): number => {
+  const parsed = Number.parseInt(value ?? '', 10);
+  return Number.isFinite(parsed) && parsed >= min && parsed <= max ? parsed : fallback;
+};
+
+const MAX_OUTPUT_TOKENS = parsePositiveInt(process.env.TOOLKIN_MAX_OUTPUT_TOKENS, 8192, 256, 65536);
 
 /**
- * Уровень размышления. У Gemini 3 это thinkingLevel, а не thinkingBudget,
- * и совсем отключить его у Flash и Flash-Lite нельзя — по умолчанию medium.
+ * Уровень размышления. У актуальных Gemini 3.x это thinkingLevel, а не
+ * thinkingBudget. Flash-Lite поддерживает minimal для дешёвых узких задач;
+ * сложные Product Plan/generation остаются на medium/high.
  *
  * Разный уровень на разные задачи не каприз: выбор между песочницей и
  * декларативной сборкой, между fields и свободным текстом — это планирование,
@@ -47,13 +60,16 @@ const MAX_OUTPUT_TOKENS = Number.parseInt(process.env.TOOLKIN_MAX_OUTPUT_TOKENS 
  * Температура здесь не задаётся сознательно: Gemini 3 её игнорирует,
  * а видимая в конфиге, но не работающая ручка хуже отсутствующей.
  */
-export type ThinkingLevel = 'low' | 'medium' | 'high';
+export type ThinkingLevel = 'minimal' | 'low' | 'medium' | 'high';
+const THINKING_LEVELS = new Set<ThinkingLevel>(['minimal', 'low', 'medium', 'high']);
+const parseThinking = (value: string | undefined, fallback: ThinkingLevel): ThinkingLevel =>
+  value && THINKING_LEVELS.has(value as ThinkingLevel) ? (value as ThinkingLevel) : fallback;
 
 export const THINKING: Record<'plan' | 'generate' | 'refine' | 'ask' | 'translate', ThinkingLevel> = {
-  plan: (process.env.TOOLKIN_THINKING_PLAN as ThinkingLevel) ?? 'medium',
-  generate: (process.env.TOOLKIN_THINKING_GENERATE as ThinkingLevel) ?? 'high',
-  refine: (process.env.TOOLKIN_THINKING_REFINE as ThinkingLevel) ?? 'medium',
-  ask: (process.env.TOOLKIN_THINKING_ASK as ThinkingLevel) ?? 'low',
+  plan: parseThinking(process.env.TOOLKIN_THINKING_PLAN, 'medium'),
+  generate: parseThinking(process.env.TOOLKIN_THINKING_GENERATE, 'high'),
+  refine: parseThinking(process.env.TOOLKIN_THINKING_REFINE, 'medium'),
+  ask: parseThinking(process.env.TOOLKIN_THINKING_ASK, 'low'),
   translate: 'low',
 };
 const ATTEMPTS_PER_MODEL = 2;
@@ -73,11 +89,18 @@ export function json(data: unknown, status: number, headers: Record<string, stri
 }
 
 const rateLimitMap = new Map<string, { count: number; resetTime: number }>();
-const LIMIT = Number.parseInt(process.env.TOOLKIN_RATE_LIMIT ?? '120', 10);
+const LIMIT = parsePositiveInt(process.env.TOOLKIN_RATE_LIMIT, 120, 1, 100000);
 const WINDOW_MS = 60 * 60 * 1000;
+let rateLimitChecks = 0;
 
 export function checkRateLimit(ip: string): boolean {
   const now = Date.now();
+  // Не даём in-memory limiter бесконечно расти на большом количестве IP.
+  if ((rateLimitChecks++ & 255) === 0) {
+    for (const [key, value] of rateLimitMap) {
+      if (now > value.resetTime) rateLimitMap.delete(key);
+    }
+  }
   const rec = rateLimitMap.get(ip);
   if (!rec || now > rec.resetTime) {
     rateLimitMap.set(ip, { count: 1, resetTime: now + WINDOW_MS });
@@ -183,7 +206,7 @@ async function callOnce(
     usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number };
   } = await res.json();
 
-  const text = body?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+  const text = (body?.candidates?.[0]?.content?.parts ?? []).map((part) => part.text ?? '').join('').trim();
   const usage: GeminiUsage = {
     input: body.usageMetadata?.promptTokenCount ?? 0,
     output: body.usageMetadata?.candidatesTokenCount ?? 0,

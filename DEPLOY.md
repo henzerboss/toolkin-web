@@ -17,6 +17,17 @@
 Порт наружу не выставляется — CloudPanel настраивает nginx как обратный прокси
 на `127.0.0.1:3010`.
 
+Для фото-фич (`camera` → `llm.ask`) JSON содержит base64 до 4 МБ исходного
+изображения, поэтому стандартный маленький лимит nginx может отрезать запрос до
+Next.js. В дополнительных директивах vhost задайте:
+
+```nginx
+client_max_body_size 8m;
+```
+
+Это одновременно служит внешним лимитом размера тела запроса; в самом API фото
+дополнительно ограничено 4 МБ после декодирования.
+
 ## 2. DNS — до выпуска сертификата
 
 У регистратора две A-записи на IP сервера:
@@ -60,13 +71,14 @@ sudo apt update && sudo apt install -y postgresql
 sudo systemctl enable --now postgresql
 
 sudo -u postgres psql <<'SQL'
-CREATE USER toolkin WITH PASSWORD 'ПАРОЛЬ' CREATEDB;
+CREATE USER toolkin WITH PASSWORD 'ПАРОЛЬ';
 CREATE DATABASE toolkin OWNER toolkin;
 SQL
 ```
 
-`CREATEDB` нужен, потому что `prisma migrate dev` создаёт временную теневую базу
-для проверки миграций. Без этого права команда падает.
+Production-пользователю `CREATEDB` не нужен: миграции уже лежат в репозитории и
+применяются через `prisma migrate deploy`. Для локальной разработки с
+`prisma migrate dev` используйте отдельную dev-базу/роль.
 
 Postgres по умолчанию слушает только localhost — снаружи он недоступен, менять
 это не нужно.
@@ -101,6 +113,7 @@ npx prisma --version   # должно быть 6.x
 ```env
 DATABASE_URL=postgresql://toolkin:ПАРОЛЬ@localhost:5432/toolkin
 TOOLKIN_GEMINI_API_KEY=...
+TOOLKIN_PLAN_SECRET=...отдельный случайный секрет минимум 32 байта...
 TOOLKIN_CLIENT_TOKEN=...длинная случайная строка...
 TOOLKIN_REVENUECAT_WEBHOOK_SECRET=...ещё одна...
 ```
@@ -108,19 +121,38 @@ TOOLKIN_REVENUECAT_WEBHOOK_SECRET=...ещё одна...
 Спецсимволы в пароле (`@`, `:`, `/`, `#`) кодируйте процентами, иначе Prisma
 разберёт строку подключения неправильно.
 
-## 6. Миграция и сборка
+Секрет для подписи Product Plan сгенерируйте отдельно и не переиспользуйте как
+client token:
 
 ```bash
-npx prisma migrate dev --name init
-npm run build
+openssl rand -hex 32
 ```
 
-При обновлении с предыдущей версии схема изменилась: поле `freeGenerationsLeft`
-заменено на `welcomeGranted`, потому что бесплатный тариф теперь измеряется
-кредитами, а не числом созданий. Миграция создаётся той же командой.
+При ротации `TOOLKIN_PLAN_SECRET` незавершённые planToken, выданные до рестарта,
+станут недействительны; клиент автоматически вернётся к повторному planning.
 
-`npm run build` вызывает `prisma generate` перед сборкой — клиент Prisma не
-разъедется со схемой.
+## 6. Проверки, сборка и миграция
+
+Миграции входят в архив. На production **не создавайте их командой
+`prisma migrate dev`**. Сначала убедитесь, что новый код собирается, и только
+потом применяйте уже проверенную миграцию:
+
+```bash
+npm test
+npm run typecheck
+npm run build
+npx prisma migrate deploy
+```
+
+`20260812090000_production_baseline` сделана idempotent: она подходит и для
+чистой базы, и для серверов, которые раньше были инициализированы локальным
+`migrate dev`. При переходе со старой схемы существующие аккаунты не получают
+welcome-кредиты повторно; новые аккаунты по-прежнему обслуживаются текущей
+логикой `welcomeGranted`.
+
+Перед первой миграцией существующей production-базы всё равно сделайте backup.
+`npm run build` вызывает `prisma generate` перед Next.js build — Prisma Client
+не разъедется со схемой.
 
 ## 7. PM2
 
@@ -228,14 +260,21 @@ npm run eval
 
 ## Обновления
 
-Всегда в этом порядке — иначе поймаете минуту с новым кодом на старой схеме:
+Обновляйте так, чтобы старый PM2-процесс продолжал обслуживать трафик, пока
+новый код проходит проверки. Миграция применяется только после успешной сборки:
 
 ```bash
-npm install && npx prisma migrate deploy && npm run build && pm2 restart toolkin
+npm install --include=dev
+npm test
+npm run typecheck
+npm run build
+npx prisma migrate deploy
+pm2 restart toolkin --update-env
 ```
 
-На сервере именно `migrate deploy`, а не `migrate dev`: он только применяет уже
-созданные миграции и ничего не генерирует.
+На сервере именно `migrate deploy`, а не `migrate dev`: он применяет только
+проверенные миграции из архива. Если build или тесты упали, до миграции и
+рестарта не доходите — текущая production-версия продолжит работать.
 
 ## Разработка в Expo Go
 
@@ -260,19 +299,20 @@ pm2 restart toolkin
 ## Проверка конфигурации
 
 ```bash
-curl -s https://toolkin.app/api/health | python3 -m json.tool
+curl -s -H "X-Client-Token: $TOOLKIN_CLIENT_TOKEN" https://toolkin.app/api/health | python3 -m json.tool
 ```
 
-Роут делает настоящий вызов каждой модели из `TOOLKIN_MODELS` и показывает,
+Роут делает настоящий вызов каждой уникальной модели из настроенных purpose-cascade и показывает,
 какие отвечают. Пустой `working` — генерация работать не будет, смотрите
-`suggestions`: там имена моделей, которые ключ реально видит.
+`suggestions`: там имена моделей, которые ключ реально видит. Перед переключением
+трафика также проверьте, что `productionConfigOk` равен `true`: в production это
+подтверждает наличие `DATABASE_URL`, `TOOLKIN_CLIENT_TOKEN`, отдельного
+`TOOLKIN_PLAN_SECRET` и `TOOLKIN_REVENUECAT_WEBHOOK_SECRET`.
 
-Это не теоретическая проверка. Google снимает модели с обслуживания раньше
-объявленных дат и блокирует старые имена для новых ключей — `gemini-2.5-flash`
-и `gemini-2.5-flash-lite` начали отдавать 404 в июле 2026 при заявленном
-отключении в октябре. Симптом со стороны приложения: «что-то пошло не так»,
-со стороны Google AI Studio: график Total API Errors с 404 NotFound и нулевые
-output-токены при ненулевых input.
+Доступность и имена Gemini-моделей меняются, поэтому `/api/health` считается
+источником истины именно для вашего production-ключа. Не привязывайте deploy к
+историческим датам снятия моделей: обновляйте каскад через переменные окружения,
+не меняя код приложения.
 
 ## Если не работает
 

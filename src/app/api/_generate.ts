@@ -1,6 +1,8 @@
 import { THINKING, callGemini, safeJsonParse, type Purpose, type ThinkingLevel } from './_shared';
 import { buildGeneratePrompt, buildRepairPrompt, buildSystemInstruction } from './_prompt';
-import { planApp, planForFeatures, type Plan } from './_plan';
+import { planApp, planForFeatures, type Plan, type Feature } from './_plan';
+import { verifyPlanToken } from '@/lib/planToken';
+import { createHash } from 'node:crypto';
 import { checkFeatures } from '@/lib/featureCheck';
 import { readCache, writeCache } from '@/lib/specCache';
 import { autofix } from '@/lib/autofix';
@@ -25,11 +27,12 @@ export interface SpecAttempt {
   autofixed?: string[];
   /** Фичи, дошедшие до готовой утилиты. Приложение показывает их пользователю. */
   features?: string[];
-  /** Фичи, которых не хватило. Утилита всё равно отдаётся — но честно. */
+  /** Missing feature details are returned only on a failed contract; successful apps have none. */
   missingFeatures?: { id: string; title: string }[];
 }
 
-const MAX_REPAIRS = Number.parseInt(process.env.TOOLKIN_MAX_REPAIRS ?? '2', 10);
+const parsedRepairs = Number.parseInt(process.env.TOOLKIN_MAX_REPAIRS ?? '', 10);
+const MAX_REPAIRS = Number.isFinite(parsedRepairs) && parsedRepairs >= 0 && parsedRepairs <= 5 ? parsedRepairs : 2;
 
 /**
  * Модель ошибается в спеке примерно в каждом пятом ответе, и почти всегда
@@ -50,10 +53,8 @@ export async function generateSpec(
   const usage = { input: 0, output: 0, thoughts: 0 };
 
   /**
-   * Лучшая из полученных спек. Нужна, потому что недостающая фича не повод
-   * оставить человека ни с чем: утилита с шестью фичами из семи полезнее
-   * пустого экрана с ошибкой, а формулировка «не хватило вот этого» честнее
-   * и понятнее, чем «что-то пошло не так».
+   * Best mechanically valid candidate is kept only as repair/failure context.
+   * A reviewed Product Plan is a contract: a partial app is never charged or shipped.
    */
   let best: { spec: MiniAppSpec; check: ReturnType<typeof checkFeatures> } | null = null;
 
@@ -97,8 +98,9 @@ export async function generateSpec(
       const featureCheck = checkFeatures(fixed.spec, plan?.features ?? []);
 
       if (!featureCheck.ok) {
-        // Запоминаем самый полный вариант и пробуем ещё раз. Если попытки
-        // кончатся, отдадим его, а не ошибку.
+        // Запоминаем самый полный вариант только как контекст для следующей
+        // починки. Если попытки закончатся, partial app не отдаётся и не
+        // оплачивается — Product Plan остаётся контрактом.
         if (!best || featureCheck.implemented.length > best.check.implemented.length) {
           best = { spec: fixed.spec, check: featureCheck };
         }
@@ -122,14 +124,16 @@ export async function generateSpec(
     prompt = buildRepairPrompt(JSON.stringify(parsed), lastErrors);
   }
 
-  // Утилита работает, но не все фичи получились — отдаём как есть.
-  // Человек увидит, чего не хватило, и сможет дописать это правкой.
+  // A reviewed feature selection is a contract. Returning a partially implemented
+  // app and charging for it recreates the exact failure mode this pipeline is
+  // designed to eliminate. Keep `best` only as repair context; never ship it.
   if (best) {
     return {
-      ok: true,
-      spec: best.spec,
+      ok: false,
       attempts,
       usage,
+      errors: best.check.issues.length ? best.check.issues : lastErrors,
+      error: 'feature_incomplete',
       features: best.check.implemented,
       missingFeatures: best.check.missing,
     };
@@ -156,50 +160,84 @@ export async function generateFromRequest(
   locale: string,
   selectedFeatures?: string[],
   customFeatures?: string[],
+  planToken?: string,
 ): Promise<SpecAttempt> {
-  // Кэш учитывает выбранные фичи: та же просьба с другим набором галочек —
-  // другая утилита, и отдавать по ней старую спеку нельзя.
-  const cacheSuffix = [
-    selectedFeatures?.length ? `#${[...selectedFeatures].sort().join(',')}` : '',
-    customFeatures?.length ? `+${customFeatures.join('|')}` : '',
-  ].join('');
-  const cached = await readCache(request + cacheSuffix, locale);
-  if (cached) return { ok: true, spec: cached, attempts: 0, cached: true };
+  let sourcePlan: Plan | undefined;
+  let planningAttempts = 0;
 
-  const planned = await planApp(request, locale);
-  let plan = selectedFeatures?.length ? planForFeatures(planned.plan, selectedFeatures) : planned.plan;
-
-  // Дописанные пользователем фичи попадают в задание, но не в механическую
-  // проверку: требований у них нет, и придумывать их за человека нельзя —
-  // проверка требовала бы того, чего он не просил.
-  if (customFeatures?.length) {
-    plan = {
-      ...plan,
-      features: [
-        ...plan.features,
-        ...customFeatures.map((text, index) => ({
-          id: `custom-${index}`,
-          title: text,
-          description: '',
-          essential: true,
-          requiresComponents: [],
-          requiresActions: [],
-          requiresCapabilities: [],
-        })),
-      ],
-    };
+  if (planToken) {
+    sourcePlan = verifyPlanToken(planToken, request, locale) ?? undefined;
+    // Never silently substitute a different Product Plan after the person has
+    // reviewed feature choices. A bad/expired token must be replanned explicitly.
+    if (!sourcePlan) return { ok: false, attempts: 0, error: 'plan_invalid' };
+  } else {
+    // Backward compatibility for older clients or a failed /plan request.
+    const planned = await planApp(request, locale);
+    planningAttempts = 1;
+    if (planned.ok) sourcePlan = planned.plan;
   }
 
-  const ok = planned.ok;
+  let plan = sourcePlan;
+  if (plan && planToken && selectedFeatures !== undefined) {
+    plan = planForFeatures(plan, selectedFeatures);
+  } else if (plan && selectedFeatures?.length) {
+    // Legacy clients had no immutable plan token; preserve their old semantics.
+    plan = planForFeatures(plan, selectedFeatures);
+  }
 
-  const system = buildSystemInstruction(locale, ok ? plan : undefined);
-  const prompt = buildGeneratePrompt(request, locale, ok ? plan : undefined);
+  if (customFeatures?.length) {
+    const custom: Feature[] = customFeatures.map((text, index) => ({
+      id: `user-custom-${index + 1}`,
+      title: text,
+      description: text,
+      essential: true,
+      acceptanceCriteria: [text],
+      requiresComponents: [],
+      requiresActions: [],
+      requiresCapabilities: [],
+    }));
+    if (plan) plan = { ...plan, features: [...plan.features, ...custom] };
+    else {
+      plan = {
+        kind: 'other', title: '', summary: request, navigation: 'single',
+        screens: [{ id: 'home', title: '', purpose: request }], customComponents: [],
+        capabilities: [], components: [], needsRecords: false, needsStructuredAi: false, features: custom,
+      };
+    }
+  }
 
-  const result = await generateSpec(system, prompt, THINKING.generate, 'generate', ok ? plan : undefined);
+  // Cache is tied to the actual agreed Product Plan, not just feature IDs.
+  // Otherwise two different plans for the same wording could share an incompatible app.
+  const planFingerprint = plan
+    ? createHash('sha256').update(JSON.stringify(plan)).digest('base64url').slice(0, 20)
+    : 'unplanned';
+  const cacheSuffix = [
+    `#plan=${planFingerprint}`,
+    selectedFeatures !== undefined ? `#selected=${[...selectedFeatures].sort().join(',')}` : '',
+    customFeatures?.length ? `#custom=${customFeatures.join('|')}` : '',
+  ].join('');
+  const cached = await readCache(request + cacheSuffix, locale);
+  if (cached) {
+    // Cache is an optimization, never a trust boundary. Re-run the same
+    // mechanical/runtime/feature gates used for a fresh model response before
+    // returning or charging for a cached spec. Corrupt or externally written
+    // rows are simply ignored and regenerated.
+    const validated = validateSpec(cached);
+    if (validated.ok) {
+      const fixed = autofix(validated.spec);
+      const smoke = smokeTest(fixed.spec);
+      const checked = smoke.ok ? checkFeatures(fixed.spec, plan?.features ?? []) : null;
+      if (checked?.ok) return {
+        ok: true, spec: fixed.spec, attempts: planningAttempts, cached: true, plan,
+        autofixed: fixed.applied, features: checked.implemented, missingFeatures: [],
+      };
+    }
+  }
 
-  if (result.ok && result.spec) await writeCache(request + cacheSuffix, locale, result.spec, plan.kind);
+  const system = buildSystemInstruction(locale, plan);
+  const prompt = buildGeneratePrompt(request, locale, plan);
+  const result = await generateSpec(system, prompt, THINKING.generate, 'generate', plan);
 
-  // Вызов планирования тоже считается: иначе метрика «сколько обращений к
-  // модели стоила генерация» врала бы в меньшую сторону.
-  return { ...result, attempts: result.attempts + 1, plan: ok ? plan : undefined };
+  if (result.ok && result.spec) await writeCache(request + cacheSuffix, locale, result.spec, plan?.kind ?? 'other');
+  return { ...result, attempts: result.attempts + planningAttempts, plan };
 }

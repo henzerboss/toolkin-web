@@ -33,9 +33,17 @@ export async function ensureAccount(appUserId: string): Promise<Account> {
   if (account.welcomeGranted) {
     const logged = await prisma.ledger.findFirst({ where: { accountId: account.id, reason: 'welcome' } });
     if (!logged) {
-      await prisma.ledger.create({
-        data: { accountId: account.id, delta: WELCOME_CREDITS(), reason: 'welcome' },
-      });
+      const eventId = `welcome:${account.id}`;
+      try {
+        await prisma.ledger.create({
+          data: { eventId, accountId: account.id, delta: WELCOME_CREDITS(), reason: 'welcome' },
+        });
+      } catch (error) {
+        // Two first-launch requests may race. The unique eventId makes the
+        // bookkeeping entry idempotent; only hide the duplicate, not DB errors.
+        const wonByOtherRequest = await prisma.ledger.findUnique({ where: { eventId } }).catch(() => null);
+        if (!wonByOtherRequest) throw error;
+      }
     }
   }
 
@@ -61,21 +69,32 @@ export async function charge(
   amount: number,
   meta?: Record<string, unknown>,
 ): Promise<ChargeResult> {
-  return prisma.$transaction(async (tx: Prisma.TransactionClient): Promise<ChargeResult> => {
-    const account = await tx.account.findUnique({ where: { appUserId } });
-    if (!account || account.credits < amount) {
-      return { ok: false, credits: account?.credits ?? 0 };
-    }
+  if (amount <= 0) {
+    const account = await prisma.account.findUnique({ where: { appUserId }, select: { credits: true } });
+    return { ok: Boolean(account), credits: account?.credits ?? 0 };
+  }
 
-    const updated = await tx.account.update({
-      where: { id: account.id },
+  return prisma.$transaction(async (tx: Prisma.TransactionClient): Promise<ChargeResult> => {
+    const account = await tx.account.findUnique({ where: { appUserId }, select: { id: true, credits: true } });
+    if (!account) return { ok: false, credits: 0 };
+
+    // The affordability check and decrement must be one SQL predicate. A
+    // read-then-update transaction can overspend when two successful model
+    // requests finish concurrently against the same balance.
+    const changed = await tx.account.updateMany({
+      where: { id: account.id, credits: { gte: amount } },
       data: { credits: { decrement: amount } },
     });
+    if (changed.count !== 1) {
+      const fresh = await tx.account.findUnique({ where: { id: account.id }, select: { credits: true } });
+      return { ok: false, credits: fresh?.credits ?? 0 };
+    }
+
     await tx.ledger.create({
       data: { accountId: account.id, delta: -amount, reason, meta: meta ? JSON.stringify(meta) : null },
     });
-
-    return { ok: true, credits: updated.credits };
+    const updated = await tx.account.findUnique({ where: { id: account.id }, select: { credits: true } });
+    return { ok: true, credits: updated?.credits ?? 0 };
   });
 }
 
@@ -133,8 +152,11 @@ export async function grantOnce(
       prisma.account.update({ where: { id: account.id }, data: { credits: { increment: amount } } }),
     ]);
     return true;
-  } catch {
-    // Уникальный индекс по eventId — гонка двух доставок разрешается здесь.
-    return false;
+  } catch (error) {
+    // A duplicate delivery loses on the unique eventId and is safe to ignore.
+    // Any other DB failure must propagate so RevenueCat can retry later.
+    const duplicate = await prisma.ledger.findUnique({ where: { eventId } }).catch(() => null);
+    if (duplicate) return false;
+    throw error;
   }
 }

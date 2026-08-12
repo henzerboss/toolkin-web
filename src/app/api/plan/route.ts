@@ -1,5 +1,6 @@
 import { cors, guard, json } from '../_shared';
 import { planApp } from '../_plan';
+import { signPlanToken } from '@/lib/planToken';
 
 export const runtime = 'nodejs';
 
@@ -41,7 +42,8 @@ export async function POST(req: Request) {
   if (prompt.length < 3) return json({ error: 'prompt_too_short' }, 400, headers);
   if (prompt.length > 600) return json({ error: 'prompt_too_long' }, 400, headers);
 
-  const locale = (body.locale ?? 'en').trim();
+  const localeRaw = (body.locale ?? 'en').trim();
+  const locale = /^[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{2,8})?$/.test(localeRaw) ? localeRaw.slice(0, 24) : 'en';
   const { plan, ok } = await planApp(prompt, locale);
 
   // Планирование не удалось — приложение просто пропустит экран выбора
@@ -53,6 +55,7 @@ export async function POST(req: Request) {
   return json(
     {
       available: true,
+      planToken: signPlanToken(prompt, locale, plan),
       title: plan.title,
       summary: plan.summary,
       kind: plan.kind,

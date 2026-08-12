@@ -22,10 +22,7 @@ interface Body {
  * Сравнение через timingSafeEqual, а не через ===: обычное сравнение строк
  * выходит на первом несовпавшем байте, и по времени ответа секрет подбирается.
  */
-function isAuthorized(req: Request): boolean {
-  const expected = process.env.TOOLKIN_REVENUECAT_WEBHOOK_SECRET;
-  if (!expected) return true; // секрет не задан — проверка отключена
-
+function isAuthorized(req: Request, expected: string): boolean {
   const provided = req.headers.get('authorization') ?? '';
   const a = Buffer.from(provided);
   const b = Buffer.from(expected);
@@ -33,7 +30,12 @@ function isAuthorized(req: Request): boolean {
 }
 
 export async function POST(req: Request) {
-  if (!isAuthorized(req)) {
+  const expected = process.env.TOOLKIN_REVENUECAT_WEBHOOK_SECRET;
+  if (!expected) {
+    console.error('[toolkin] RevenueCat webhook secret is not configured');
+    return Response.json({ error: 'webhook_not_configured' }, { status: 503 });
+  }
+  if (!isAuthorized(req, expected)) {
     return Response.json({ error: 'unauthorized' }, { status: 401 });
   }
 

@@ -8,7 +8,9 @@ export const runtime = 'nodejs';
 interface Body {
   prompt?: string;
   locale?: string;
-  /** Идентификаторы фич, оставленных пользователем. Пусто — собираем как раньше. */
+  /** Signed immutable Product Plan returned by /plan. */
+  planToken?: string;
+  /** Идентификаторы фич, оставленных пользователем. */
   features?: string[];
   /** Фичи, дописанные пользователем своими словами. */
   customFeatures?: string[];
@@ -34,7 +36,8 @@ export async function POST(req: Request) {
   if (prompt.length < 3) return json({ error: 'prompt_too_short' }, 400, headers);
   if (prompt.length > 600) return json({ error: 'prompt_too_long' }, 400, headers);
 
-  const locale = (body.locale ?? 'en').trim();
+  const localeRaw = (body.locale ?? 'en').trim();
+  const locale = /^[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{2,8})?$/.test(localeRaw) ? localeRaw.slice(0, 24) : 'en';
   const price = COST.generate();
 
   // Баланс проверяется до вызова модели, а списывается после успеха:
@@ -44,7 +47,7 @@ export async function POST(req: Request) {
   }
 
   const features = Array.isArray(body.features)
-    ? body.features.filter((item) => typeof item === 'string').slice(0, 10)
+    ? body.features.filter((item) => typeof item === 'string').map((item) => item.trim().slice(0, 80)).filter(Boolean).slice(0, 10)
     : undefined;
 
   const customFeatures = Array.isArray(body.customFeatures)
@@ -55,12 +58,13 @@ export async function POST(req: Request) {
         .slice(0, 5)
     : undefined;
 
-  const result = await generateFromRequest(prompt, locale, features, customFeatures);
+  const planToken = typeof body.planToken === 'string' ? body.planToken.slice(0, 20000) : undefined;
+  const result = await generateFromRequest(prompt, locale, features, customFeatures, planToken);
 
   if (!result.ok) {
     return json(
       { error: result.error, errors: result.errors, attempts: result.attempts },
-      result.error === 'validation_failed' ? 422 : 503,
+      result.error === 'validation_failed' || result.error === 'feature_incomplete' ? 422 : result.error === 'plan_invalid' ? 409 : 503,
       headers,
     );
   }
@@ -73,6 +77,8 @@ export async function POST(req: Request) {
     cached: result.cached ?? false,
     tokens: result.usage,
   });
+
+  if (!charged.ok) return json({ error: 'insufficient_credits', credits: charged.credits, price }, 402, headers);
 
   return json(
     {

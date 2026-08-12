@@ -1,128 +1,20 @@
 import type { Feature } from '@/app/api/_plan';
-import type { MiniAppSpec, UiNode } from '@/lib/specTypes';
+import { ACTION_NAMES, COMPONENT_TYPES } from '@/lib/dsl';
+import { getScreenRoots, type MiniAppSpec, type UiNode } from '@/lib/specTypes';
 
-/**
- * Проверка, что обещанные фичи есть в собранной утилите.
- *
- * Проверка намеренно снисходительная. Первая версия требовала точного
- * совпадения имён и заворачивала хорошие утилиты: планировщик писал `Stat`,
- * сборщик делал `ProgressRing` — по смыслу одно и то же, — или требовал
- * `state.set` там, где поле ввода с `bind` пишет состояние само, вообще без
- * экшена. Строгость ловила не ошибки, а разные способы сказать одно и то же.
- *
- * Поэтому сравниваются не имена, а роли: «показать результат», «ввести число»,
- * «показать историю». Роль закрыта любым компонентом из своего класса.
- */
-
-/** Компоненты, взаимозаменяемые с точки зрения пользы для пользователя. */
-const COMPONENT_GROUPS: string[][] = [
-  ['Stat', 'ProgressRing', 'Text'],
-  ['NumberField', 'Slider', 'Stepper'],
-  ['List', 'Table', 'Gallery', 'Chart', 'LineChart', 'PieChart'],
-  ['Chart', 'LineChart', 'PieChart', 'ProgressRing'],
-  ['DateField', 'Calendar'],
-  ['Image', 'Gallery'],
-  ['Select', 'Toggle'],
-];
-
-/** Экшены, закрывающие одну и ту же потребность. */
-const ACTION_GROUPS: string[][] = [
-  ['state.set', 'state.inc', 'state.toggle', 'state.random', 'state.reset'],
-  ['records.add', 'records.remove', 'records.clear'],
-  ['timer.start', 'timer.pause', 'timer.reset'],
-  ['notify.schedule', 'notify.at'],
-  ['clipboard.set', 'share'],
-  ['llm.ask', 'image.generate'],
-];
-
-function satisfied(required: string, present: Set<string>, groups: string[][]): boolean {
-  if (present.has(required)) return true;
-
-  for (const group of groups) {
-    if (!group.includes(required)) continue;
-    if (group.some((alternative) => present.has(alternative))) return true;
-  }
-  return false;
+interface Inventory { components:Set<string>; actions:Set<string>; screens:Set<string>; }
+function collect(spec:MiniAppSpec):Inventory{
+ const components=new Set<string>(),actions=new Set<string>(),screens=new Set(Object.keys(getScreenRoots(spec))),visitedCustom=new Set<string>();
+ const walk=(node:UiNode):void=>{components.add(node.type);if(typeof node.bind==='string')actions.add('state.set');if(Array.isArray(node.onPress))for(const raw of node.onPress as unknown as Record<string,unknown>[])if(typeof raw.action==='string')actions.add(raw.action);if(spec.components?.[node.type]&&!visitedCustom.has(node.type)){visitedCustom.add(node.type);walk(spec.components[node.type].template);}if(Array.isArray(node.children))node.children.forEach(walk);};Object.values(getScreenRoots(spec)).forEach(walk);return{components,actions,screens};
 }
-
-function collect(spec: MiniAppSpec): { components: Set<string>; actions: Set<string> } {
-  const components = new Set<string>();
-  const actions = new Set<string>();
-
-  const walk = (node: UiNode): void => {
-    components.add(node.type);
-
-    // Поле с bind меняет состояние без экшена — для пользователя это ровно
-    // то же самое, что нажать кнопку с state.set.
-    if (typeof node.bind === 'string') actions.add('state.set');
-
-    if (Array.isArray(node.onPress)) {
-      for (const raw of node.onPress as unknown as Record<string, unknown>[]) {
-        if (typeof raw?.action === 'string') actions.add(raw.action);
-      }
-    }
-    if (Array.isArray(node.children)) node.children.forEach(walk);
-  };
-
-  walk(spec.ui);
-
-  // Песочница самодостаточна: внутри неё может быть что угодно, и требовать
-  // от такой утилиты отдельных компонентов бессмысленно.
-  if (components.has('Sandbox')) {
-    ['Stat', 'Button', 'List', 'Chart'].forEach((type) => components.add(type));
-    ['state.set', 'records.add'].forEach((action) => actions.add(action));
-  }
-
-  return { components, actions };
-}
-
-export interface FeatureCheck {
-  ok: boolean;
-  /** Инструкции для цикла починки: что именно не реализовано. */
-  issues: string[];
-  /** Фичи, дошедшие до готовой утилиты. */
-  implemented: string[];
-  /** Фичи, которых не хватило. Показываются пользователю честно. */
-  missing: { id: string; title: string }[];
-}
-
-export function checkFeatures(spec: MiniAppSpec, features: Feature[]): FeatureCheck {
-  if (features.length === 0) return { ok: true, issues: [], implemented: [], missing: [] };
-
-  const { components, actions } = collect(spec);
-  const capabilities = new Set<string>(spec.capabilities);
-
-  const issues: string[] = [];
-  const implemented: string[] = [];
-  const missing: { id: string; title: string }[] = [];
-
-  for (const feature of features) {
-    const gaps: string[] = [];
-
-    for (const component of feature.requiresComponents) {
-      if (!satisfied(component, components, COMPONENT_GROUPS)) gaps.push(`component ${component}`);
-    }
-    for (const action of feature.requiresActions) {
-      if (!satisfied(action, actions, ACTION_GROUPS)) gaps.push(`action ${action}`);
-    }
-    // Права не заменяются ничем: без объявленной capability экшен просто
-    // не выполнится, тут снисходительность неуместна.
-    for (const capability of feature.requiresCapabilities) {
-      if (!capabilities.has(capability)) gaps.push(`capability ${capability}`);
-    }
-
-    if (gaps.length === 0) {
-      implemented.push(feature.id);
-      continue;
-    }
-
-    missing.push({ id: feature.id, title: feature.title });
-    issues.push(
-      `feature "${feature.title}" is missing: ${gaps.join(', ')}. ` +
-        'The person ticked this feature, so add it — or use an equivalent component ' +
-        'that gives the same result',
-    );
-  }
-
-  return { ok: issues.length === 0, issues, implemented, missing };
+export interface FeatureCheck{ok:boolean;issues:string[];implemented:string[];missing:{id:string;title:string}[];}
+export function checkFeatures(spec:MiniAppSpec,features:Feature[]):FeatureCheck{
+ if(!features.length)return{ok:true,issues:[],implemented:[],missing:[]};const inventory=collect(spec),caps=new Set<string>(spec.capabilities),issues:string[]=[],implemented:string[]=[],missing:{id:string;title:string}[]=[];
+ for(const feature of features){const gaps:string[]=[];for(const c of feature.requiresComponents)if(!inventory.components.has(c))gaps.push(`required component ${c}`);for(const a of feature.requiresActions)if(!inventory.actions.has(a))gaps.push(`required action ${a}`);for(const c of feature.requiresCapabilities)if(!caps.has(c))gaps.push(`required capability ${c}`);
+  const evidence=spec.featureEvidence?.[feature.id];const count=(evidence?.screens?.length??0)+(evidence?.components?.length??0)+(evidence?.actions?.length??0)+(evidence?.capabilities?.length??0);
+  if(!evidence||!count)gaps.push('featureEvidence is missing');else{for(const x of evidence.screens??[])if(!inventory.screens.has(x))gaps.push(`evidence screen ${x} does not exist`);for(const x of evidence.components??[])if(!inventory.components.has(x))gaps.push(`evidence component ${x} is not used`);for(const x of evidence.actions??[])if(!inventory.actions.has(x))gaps.push(`evidence action ${x} is not used`);for(const x of evidence.capabilities??[])if(!caps.has(x))gaps.push(`evidence capability ${x} is not declared`);const structural=new Set(['Screen','Stack','Row','Grid','Card','Section','Text','Button','Divider','Spacer','EmptyState']);const meaningfulComponents=(evidence.components??[]).filter((x)=>!structural.has(x)).length;const concrete=meaningfulComponents+(evidence.actions?.length??0)+(evidence.capabilities?.length??0);if(!concrete&&!feature.requiresComponents.length&&!feature.requiresActions.length&&!feature.requiresCapabilities.length)gaps.push('featureEvidence must cite a behavioral/specialized component, action or capability; layout/Text alone does not prove a feature');}
+  for(const a of evidence?.actions??[])if(!ACTION_NAMES.includes(a))gaps.push(`unknown evidence action ${a}`);for(const c of evidence?.components??[])if(!COMPONENT_TYPES.includes(c)&&!spec.components?.[c])gaps.push(`unknown evidence component ${c}`);
+  const unique=[...new Set(gaps)];if(!unique.length)implemented.push(feature.id);else{missing.push({id:feature.id,title:feature.title});issues.push(`feature "${feature.title}" [${feature.id}] is not proven/implemented: ${unique.join(', ')}. Implement its acceptance criteria (${feature.acceptanceCriteria.join('; ')}) and update featureEvidence with exact elements that do the work.`);}
+ }
+ return{ok:!issues.length,issues,implemented,missing};
 }

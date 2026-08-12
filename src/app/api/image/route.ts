@@ -19,7 +19,8 @@ interface Body {
  */
 const BASE_SIZE = process.env.TOOLKIN_DEEPINFRA_IMAGE_SIZE ?? '1024x1024';
 const MODEL = process.env.TOOLKIN_DEEPINFRA_IMAGE_MODEL ?? 'black-forest-labs/FLUX-1-schnell';
-const STEPS = Number.parseInt(process.env.TOOLKIN_DEEPINFRA_IMAGE_STEPS ?? '4', 10);
+const parsedSteps = Number.parseInt(process.env.TOOLKIN_DEEPINFRA_IMAGE_STEPS ?? '', 10);
+const STEPS = Number.isFinite(parsedSteps) && parsedSteps >= 1 && parsedSteps <= 4 ? parsedSteps : 4;
 
 function sizeFor(aspect: string | undefined): string {
   const [rawWidth] = BASE_SIZE.split('x');
@@ -124,6 +125,8 @@ export async function POST(req: Request) {
 
     // Списываем только после успеха — как и везде: неудача не должна стоить денег.
     const charged = await charge(account!.appUserId, 'image', price, { appId: body.appId });
+
+    if (!charged.ok) return json({ error: 'insufficient_credits', credits: charged.credits, price }, 402, headers);
 
     const image = base64 ? `data:image/jpeg;base64,${base64}` : entry!.url!;
     return json(
