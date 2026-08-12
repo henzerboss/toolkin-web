@@ -43,8 +43,8 @@ const ACTION_SET = new Set<string>(ACTION_NAMES);
 const CAPABILITY_SET = new Set<string>(CAPABILITIES);
 
 /**
- * Planner-only schema. `_shared` converts this OpenAPI-style representation to
- * Gemini's current responseJsonSchema at the HTTP boundary.
+ * Planner-only schema. `_shared` converts this compact OpenAPI-style representation
+ * to JSON Schema and sends it as Interactions API response_format.schema.
  */
 const FEATURE_SCHEMA: Record<string, unknown> = {
   type: 'OBJECT',

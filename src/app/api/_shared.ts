@@ -1,11 +1,6 @@
 import { ensureAccount, type Account } from '@/lib/credits';
 
-/**
- * Общая обвязка API-роутов Toolkin.
- * Повторяет соглашения проекта (nodejs runtime, CORS, X-Client-Token,
- * ограничение по IP) и добавляет одно своё: идентификацию по appUserId
- * из RevenueCat — регистрации в приложении нет.
- */
+/** Shared API/runtime helpers for Toolkin backend. */
 
 const parseModels = (value: string | undefined, fallback: string): string[] =>
   (value ?? fallback)
@@ -18,15 +13,6 @@ const GLOBAL_MODELS = process.env.TOOLKIN_MODELS;
 
 export const MODELS: string[] = parseModels(GLOBAL_MODELS, DEFAULT_MODEL_CASCADE);
 
-/**
- * Модели подобраны по задаче, а не одна на всё. TOOLKIN_MODELS остаётся
- * глобальным override: если он задан, purpose-specific переменные наследуют
- * именно его, пока не переопределены отдельно.
- *
- * Product Plan и генерация определяют архитектуру приложения, поэтому здесь
- * приоритет у более сильных моделей. Короткие ответы и перевод промпта для
- * изображения высокочастотны и хорошо подходят для Flash-Lite.
- */
 const purposeModels = (specific: string | undefined, fallback: string): string[] =>
   parseModels(specific ?? GLOBAL_MODELS, fallback);
 
@@ -45,22 +31,19 @@ const parsePositiveInt = (value: string | undefined, fallback: number, min: numb
   return Number.isFinite(parsed) && parsed >= min && parsed <= max ? parsed : fallback;
 };
 
-const MAX_OUTPUT_TOKENS = parsePositiveInt(process.env.TOOLKIN_MAX_OUTPUT_TOKENS, 8192, 256, 65536);
-
 /**
- * Уровень размышления. В конфиге Toolkin храним удобные lowercase значения,
- * но REST generateContent ожидает enum MINIMAL/LOW/MEDIUM/HIGH; callOnce
- * переводит значение в uppercase на HTTP-границе. Flash-Lite поддерживает minimal для дешёвых узких задач;
- * сложные Product Plan/generation остаются на medium/high.
- *
- * Разный уровень на разные задачи не каприз: выбор между песочницей и
- * декларативной сборкой, между fields и свободным текстом — это планирование,
- * и там высокий уровень окупается. А перевод промпта для картинки планирования
- * не требует, зато напрямую добавляет секунды ожидания.
- *
- * Температура здесь не задаётся сознательно: Gemini 3 её игнорирует,
- * а видимая в конфиге, но не работающая ручка хуже отсутствующей.
+ * Spec v2 may legitimately need substantially more than 8k tokens. Keep limits
+ * per task: the planner/ask paths stay cheap while generation/refinement have
+ * enough room to finish a complete JSON object instead of being cut mid-token.
  */
+const OUTPUT_LIMITS: Record<Purpose, number> = {
+  plan: parsePositiveInt(process.env.TOOLKIN_MAX_OUTPUT_TOKENS_PLAN, 6144, 512, 65536),
+  generate: parsePositiveInt(process.env.TOOLKIN_MAX_OUTPUT_TOKENS_GENERATE, 32768, 2048, 65536),
+  refine: parsePositiveInt(process.env.TOOLKIN_MAX_OUTPUT_TOKENS_REFINE, 32768, 2048, 65536),
+  ask: parsePositiveInt(process.env.TOOLKIN_MAX_OUTPUT_TOKENS_ASK, 4096, 256, 65536),
+  translate: parsePositiveInt(process.env.TOOLKIN_MAX_OUTPUT_TOKENS_TRANSLATE, 2048, 128, 65536),
+};
+
 export type ThinkingLevel = 'minimal' | 'low' | 'medium' | 'high';
 export type GeminiRestThinkingLevel = 'MINIMAL' | 'LOW' | 'MEDIUM' | 'HIGH';
 export const toGeminiRestThinkingLevel = (level: ThinkingLevel): GeminiRestThinkingLevel =>
@@ -69,15 +52,16 @@ const THINKING_LEVELS = new Set<ThinkingLevel>(['minimal', 'low', 'medium', 'hig
 const parseThinking = (value: string | undefined, fallback: ThinkingLevel): ThinkingLevel =>
   value && THINKING_LEVELS.has(value as ThinkingLevel) ? (value as ThinkingLevel) : fallback;
 
-export const THINKING: Record<'plan' | 'generate' | 'refine' | 'ask' | 'translate', ThinkingLevel> = {
+export const THINKING: Record<Purpose, ThinkingLevel> = {
   plan: parseThinking(process.env.TOOLKIN_THINKING_PLAN, 'medium'),
   generate: parseThinking(process.env.TOOLKIN_THINKING_GENERATE, 'high'),
   refine: parseThinking(process.env.TOOLKIN_THINKING_REFINE, 'medium'),
   ask: parseThinking(process.env.TOOLKIN_THINKING_ASK, 'low'),
   translate: 'low',
 };
-const ATTEMPTS_PER_MODEL = 2;
-const RETRY_DELAY_MS = 120;
+
+const ATTEMPTS_PER_MODEL = parsePositiveInt(process.env.TOOLKIN_ATTEMPTS_PER_MODEL, 2, 1, 4);
+const RETRY_DELAY_MS = 150;
 
 export function cors(origin: string) {
   return {
@@ -99,11 +83,8 @@ let rateLimitChecks = 0;
 
 export function checkRateLimit(ip: string): boolean {
   const now = Date.now();
-  // Не даём in-memory limiter бесконечно расти на большом количестве IP.
   if ((rateLimitChecks++ & 255) === 0) {
-    for (const [key, value] of rateLimitMap) {
-      if (now > value.resetTime) rateLimitMap.delete(key);
-    }
+    for (const [key, value] of rateLimitMap) if (now > value.resetTime) rateLimitMap.delete(key);
   }
   const rec = rateLimitMap.get(ip);
   if (!rec || now > rec.resetTime) {
@@ -122,10 +103,6 @@ export interface Guard {
   headers: Record<string, string>;
 }
 
-/**
- * Единая проверка на входе каждого роута. Возвращает готовый ответ при отказе,
- * чтобы в самих роутах не расползались варианты формата ошибки.
- */
 export async function guard(req: Request, options: { requireAccount?: boolean } = {}): Promise<Guard> {
   const origin = req.headers.get('origin') ?? '';
   const headers = { 'Content-Type': 'application/json', ...cors(origin) };
@@ -164,19 +141,13 @@ export interface GeminiResult {
   text?: string;
   error?: string;
   model?: string;
-  /** Фактический расход. Без него стоимость генерации остаётся догадкой. */
   usage?: GeminiUsage;
+  transport?: 'interactions' | 'generateContent';
 }
 
 type GeminiPart = { text: string } | { inlineData: { mimeType: string; data: string } };
 
-/**
- * `responseSchema` is deprecated in the current Gemini generateContent API.
- * Toolkin's planner schema is intentionally authored in the older OpenAPI-style
- * form (OBJECT/STRING/ARRAY) because it is compact and easy to share with our
- * existing validators. Convert it at the HTTP boundary to the supported
- * `responseJsonSchema` representation instead of sending a deprecated field.
- */
+/** Convert the compact OpenAPI-like schemas used in this repository to JSON Schema. */
 export function toResponseJsonSchema(schema: Record<string, unknown>): Record<string, unknown> {
   const convert = (value: unknown): unknown => {
     if (Array.isArray(value)) return value.map(convert);
@@ -184,28 +155,113 @@ export function toResponseJsonSchema(schema: Record<string, unknown>): Record<st
     const source = value as Record<string, unknown>;
     const out: Record<string, unknown> = {};
     for (const [key, raw] of Object.entries(source)) {
-      if (key === 'type' && typeof raw === 'string') {
-        out[key] = raw.toLowerCase();
-      } else {
-        out[key] = convert(raw);
-      }
+      // propertyOrdering is a provider-specific legacy extension, not JSON Schema.
+      if (key === 'propertyOrdering') continue;
+      if (key === 'type' && typeof raw === 'string') out[key] = raw.toLowerCase();
+      else out[key] = convert(raw);
     }
     return out;
   };
   return convert(schema) as Record<string, unknown>;
 }
 
-async function callOnce(
+const DEFAULT_JSON_OBJECT_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  additionalProperties: true,
+};
+
+/**
+ * Current production JSON transport. The Interactions API has one response_format
+ * field that both requests application/json and enforces the schema. That removes
+ * the main source of "valid MIME type but malformed JSON" failures.
+ */
+async function callOnceInteractions(
+  model: string,
+  apiKey: string,
+  system: string,
+  prompt: string,
+  thinking: ThinkingLevel,
+  maxOutputTokens: number,
+  responseSchema?: Record<string, unknown>,
+): Promise<GeminiResult> {
+  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/interactions?key=${apiKey}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      // Explicitly document the schema generation the backend was implemented for.
+      // The revision header is ignored by Google after the legacy sunset, which is safe.
+      'Api-Revision': '2026-05-20',
+    },
+    body: JSON.stringify({
+      model,
+      input: prompt,
+      system_instruction: system,
+      response_format: {
+        type: 'text',
+        mime_type: 'application/json',
+        schema: responseSchema ? toResponseJsonSchema(responseSchema) : DEFAULT_JSON_OBJECT_SCHEMA,
+      },
+      generation_config: {
+        max_output_tokens: maxOutputTokens,
+        thinking_level: thinking,
+      },
+      store: false,
+    }),
+  });
+
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    return { ok: false, error: detail || `gemini_interactions_${res.status}`, transport: 'interactions' };
+  }
+
+  const body = (await res.json()) as {
+    status?: string;
+    steps?: Array<{ type?: string; content?: Array<{ type?: string; text?: string }> }>;
+    usage?: {
+      total_input_tokens?: number;
+      total_output_tokens?: number;
+      total_thought_tokens?: number;
+    };
+  };
+
+  if (body.status && body.status !== 'completed') {
+    return { ok: false, error: `interaction_${body.status}`, model, transport: 'interactions' };
+  }
+
+  const text = (body.steps ?? [])
+    .filter((step) => step.type === 'model_output')
+    .flatMap((step) => step.content ?? [])
+    .filter((content) => content.type === 'text')
+    .map((content) => content.text ?? '')
+    .join('')
+    .trim();
+
+  const usage: GeminiUsage = {
+    input: body.usage?.total_input_tokens ?? 0,
+    output: body.usage?.total_output_tokens ?? 0,
+    thoughts: body.usage?.total_thought_tokens ?? 0,
+  };
+
+  return text
+    ? { ok: true, text, model, usage, transport: 'interactions' }
+    : { ok: false, error: 'empty_response', model, usage, transport: 'interactions' };
+}
+
+/**
+ * generateContent remains only for plain text and multimodal requests. We no
+ * longer attach responseJsonSchema here; JSON app creation goes through
+ * Interactions structured output above.
+ */
+async function callOnceGenerateContent(
   model: string,
   apiKey: string,
   system: string,
   parts: GeminiPart[],
   jsonOnly: boolean,
   thinking: ThinkingLevel,
-  responseSchema?: Record<string, unknown>,
+  maxOutputTokens: number,
 ): Promise<GeminiResult> {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -213,38 +269,35 @@ async function callOnce(
       systemInstruction: { parts: [{ text: system }] },
       contents: [{ role: 'user', parts }],
       generationConfig: {
-        maxOutputTokens: MAX_OUTPUT_TOKENS,
+        maxOutputTokens,
         thinkingConfig: { thinkingLevel: toGeminiRestThinkingLevel(thinking) },
         ...(jsonOnly ? { responseMimeType: 'application/json' } : {}),
-        // Structured output is useful, but never couple product availability to
-        // a deprecated transport field. Google now recommends responseJsonSchema.
-        // The planner has a second JSON-only attempt without a schema as an
-        // additional production fallback for provider-side schema regressions.
-        ...(responseSchema ? { responseJsonSchema: toResponseJsonSchema(responseSchema) } : {}),
       },
     }),
   });
 
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
-    return { ok: false, error: detail || `gemini_${res.status}` };
+    return { ok: false, error: detail || `gemini_${res.status}`, transport: 'generateContent' };
   }
 
-  const body: {
-    candidates?: { content?: { parts?: { text?: string }[] } }[];
+  const body = (await res.json()) as {
+    candidates?: Array<{ finishReason?: string; content?: { parts?: Array<{ text?: string }> } }>;
     usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number };
-  } = await res.json();
-
-  const text = (body?.candidates?.[0]?.content?.parts ?? []).map((part) => part.text ?? '').join('').trim();
+  };
+  const candidate = body.candidates?.[0];
+  const text = (candidate?.content?.parts ?? []).map((part) => part.text ?? '').join('').trim();
   const usage: GeminiUsage = {
     input: body.usageMetadata?.promptTokenCount ?? 0,
     output: body.usageMetadata?.candidatesTokenCount ?? 0,
-    // Токены размышления оплачиваются как выходные и составляют заметную долю
-    // при thinkingLevel=high — без отдельного учёта счёт выглядит необъяснимым.
     thoughts: body.usageMetadata?.thoughtsTokenCount ?? 0,
   };
 
-  return text ? { ok: true, text, model, usage } : { ok: false, error: 'empty_response' };
+  if (!text) {
+    const suffix = candidate?.finishReason ? `_${candidate.finishReason.toLowerCase()}` : '';
+    return { ok: false, error: `empty_response${suffix}`, model, usage, transport: 'generateContent' };
+  }
+  return { ok: true, text, model, usage, transport: 'generateContent' };
 }
 
 export async function callGemini(
@@ -261,47 +314,68 @@ export async function callGemini(
   const apiKey = process.env.TOOLKIN_GEMINI_API_KEY ?? process.env.RECIPE_GEMINI_API_KEY;
   if (!apiKey) return { ok: false, error: 'TOOLKIN_GEMINI_API_KEY missing' };
 
+  const purpose = options.purpose ?? 'generate';
+  const models = MODELS_BY_PURPOSE[purpose] ?? MODELS;
+  const thinking = options.thinking ?? THINKING[purpose] ?? 'medium';
+  const jsonOnly = options.jsonOnly !== false;
+  const maxOutputTokens = OUTPUT_LIMITS[purpose];
+
   const parts: GeminiPart[] = [{ text: prompt }];
   if (options.imageBase64) parts.push({ inlineData: { mimeType: 'image/jpeg', data: options.imageBase64 } });
 
-  // Ошибка последней попытки уходит в ответ роута: самая частая причина
-  // отказа — снятая с обслуживания модель, и без текста Google это выглядит
-  // как «что-то пошло не так» вместо «поменяй TOOLKIN_MODELS».
   let lastError = 'unavailable';
-  const models = options.purpose ? MODELS_BY_PURPOSE[options.purpose] : MODELS;
-
   for (const model of models) {
     for (let attempt = 0; attempt < ATTEMPTS_PER_MODEL; attempt++) {
       try {
-        const result = await callOnce(
-          model,
-          apiKey,
-          system,
-          parts,
-          options.jsonOnly !== false,
-          options.thinking ?? 'medium',
-          options.responseSchema,
-        );
+        const result = jsonOnly && !options.imageBase64
+          ? await callOnceInteractions(model, apiKey, system, prompt, thinking, maxOutputTokens, options.responseSchema)
+          : await callOnceGenerateContent(model, apiKey, system, parts, jsonOnly, thinking, maxOutputTokens);
         if (result.ok) return result;
         lastError = result.error ?? 'unknown';
       } catch (error) {
         lastError = String(error);
       }
-      await sleep(RETRY_DELAY_MS);
+      if (attempt + 1 < ATTEMPTS_PER_MODEL) await sleep(RETRY_DELAY_MS);
     }
   }
   return { ok: false, error: `all_models_failed: ${lastError}` };
 }
 
-export function safeJsonParse<T>(text: string, fallback: T): T {
-  try {
-    return JSON.parse(text) as T;
-  } catch {
-    const cleaned = text.replace(/```json|```/g, '').trim();
-    try {
-      return JSON.parse(cleaned) as T;
-    } catch {
-      return fallback;
+/** Find the first balanced JSON object/array while respecting quoted strings. */
+function extractBalancedJson(text: string): string | null {
+  const start = text.search(/[\[{]/);
+  if (start < 0) return null;
+  const open = text[start];
+  const close = open === '{' ? '}' : ']';
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') { inString = true; continue; }
+    if (ch === open) depth += 1;
+    else if (ch === close) {
+      depth -= 1;
+      if (depth === 0) return text.slice(start, i + 1);
     }
   }
+  return null;
+}
+
+export function safeJsonParse<T>(text: string, fallback: T): T {
+  const candidates = [
+    text.trim(),
+    text.replace(/```(?:json)?/gi, '').replace(/```/g, '').trim(),
+    extractBalancedJson(text) ?? '',
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    try { return JSON.parse(candidate) as T; } catch { /* try next representation */ }
+  }
+  return fallback;
 }

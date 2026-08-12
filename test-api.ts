@@ -17,8 +17,8 @@ import type { MiniAppSpec } from './src/lib/specTypes';
 const validationErrors = (result: ReturnType<typeof validateSpec>): string => result.ok ? '' : result.errors.join('\n');
 
 
-// Planner transport: OpenAPI-style schema is converted to the current Gemini
-// responseJsonSchema format instead of using the deprecated responseSchema field.
+// Structured transport: repository schemas are normalized to lowercase JSON Schema
+// before being sent in Interactions API response_format.schema.
 const convertedSchema = toResponseJsonSchema({
   type: 'OBJECT', properties: { features: { type: 'ARRAY', items: { type: 'STRING' }, minItems: 1 } },
   required: ['features'], propertyOrdering: ['features'],
@@ -26,6 +26,7 @@ const convertedSchema = toResponseJsonSchema({
 assert.strictEqual(convertedSchema.type, 'object');
 assert.strictEqual(((convertedSchema.properties as any).features as any).type, 'array');
 assert.strictEqual((((convertedSchema.properties as any).features as any).items as any).type, 'string');
+assert.strictEqual((convertedSchema as any).propertyOrdering, undefined);
 assert.strictEqual(toGeminiRestThinkingLevel('medium'), 'MEDIUM');
 assert.strictEqual(toGeminiRestThinkingLevel('high'), 'HIGH');
 

@@ -74,12 +74,14 @@ expiration, locale и hash исходного запроса и строит п�
 Cache key включает fingerprint фактически согласованного плана и выбранных
 фичей, поэтому спека от другого плана не может попасть в ответ из кэша.
 
-**Planner resilient path.** Для `generateContent` thinking level отправляется как
-REST enum `MINIMAL/LOW/MEDIUM/HIGH`. Structured output использует текущий
-`responseJsonSchema`; если провайдер временно отвергает схему, `/api/plan` делает
-вторую попытку в JSON-only mode. Если и она недоступна, экран выбора функций всё
-равно получает консервативный локальный plan, который пользователь может поправить
-перед генерацией. Raw provider error в клиент не показывается.
+**Structured JSON transport.** Product Plan, generation и refine идут через текущий
+Gemini Interactions API с `response_format` (`application/json` + JSON Schema). Это
+не просто просьба модели «верни JSON»: провайдер сам принуждает ответ к JSON-объекту.
+Для полной Spec v2 используется широкий envelope-schema, а глубокая семантика после
+этого проверяется Toolkin validator/smoke/feature-contract. Генерация и refine имеют
+отдельный output budget 32768 tokens, чтобы многоэкранная спека не обрывалась на 8k.
+Planner сохраняет JSON/local fallbacks, поэтому экран выбора функций не становится
+тупиком при временном provider failure. Raw provider errors пользователю не показываются.
 
 **Product Plan описывает результат, а не только компоненты.** Для каждой feature
 есть acceptance criteria и точные механические requirements. План также

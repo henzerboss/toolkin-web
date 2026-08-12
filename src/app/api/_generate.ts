@@ -32,6 +32,7 @@ export interface SpecAttempt {
   missingFeatures?: { id: string; title: string }[];
 }
 
+
 const parsedRepairs = Number.parseInt(process.env.TOOLKIN_MAX_REPAIRS ?? '', 10);
 const MAX_REPAIRS = Number.isFinite(parsedRepairs) && parsedRepairs >= 0 && parsedRepairs <= 5 ? parsedRepairs : 2;
 
@@ -68,7 +69,10 @@ export async function generateSpec(
       usage.output += result.usage.output;
       usage.thoughts += result.usage.thoughts;
     }
-    if (!result.ok) return { ok: false, attempts, error: result.error ?? 'model_unavailable', usage };
+    if (!result.ok) {
+      console.error(`[toolkin.${purpose}] Gemini request failed:`, (result.error ?? 'unknown').slice(0, 1200));
+      return { ok: false, attempts, error: 'model_unavailable', usage };
+    }
 
     const parsed = safeJsonParse<unknown>(result.text ?? '', null);
     if (parsed === null) {

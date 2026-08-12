@@ -1,4 +1,5 @@
-import { MODELS_BY_PURPOSE, cors, guard, json, toGeminiRestThinkingLevel } from '../_shared';
+import { MODELS_BY_PURPOSE, callGemini, cors, guard, json } from '../_shared';
+import { PIPELINE_VERSION } from '@/lib/specCacheKey';
 
 export const runtime = 'nodejs';
 
@@ -11,7 +12,7 @@ type ProbeState = {
   listError: string | null;
   probes: { model: string; ok: boolean; status: number; error?: string }[];
   working: string[];
-  planner: { model: string; ok: boolean; status: number; error?: string };
+  planner: { model: string; ok: boolean; status: number; error?: string; transport?: string };
   image: Record<string, unknown>;
 };
 let probeCache: ProbeState | null = null;
@@ -21,9 +22,9 @@ export async function OPTIONS(req: Request) {
 }
 
 /**
- * Production diagnostics. External model/image checks are cached for five
- * minutes: health endpoints are often polled and must not become a paid API
- * amplifier by themselves.
+ * Production diagnostics. The only live paid probe is one tiny structured JSON
+ * request through the SAME callGemini transport used by the product. We do not
+ * ping every model or generate a real image from a health endpoint.
  */
 export async function GET(req: Request) {
   const g = await guard(req, { requireAccount: false });
@@ -44,12 +45,14 @@ export async function GET(req: Request) {
     process.env.TOOLKIN_PLAN_SECRET &&
     process.env.TOOLKIN_REVENUECAT_WEBHOOK_SECRET
   );
-  const planWorking = MODELS_BY_PURPOSE.plan.some((model) => external.working.includes(model));
-  const ok = planWorking && external.planner.ok && productionConfigOk;
+  const planWorking = external.planner.ok;
+  const ok = planWorking && productionConfigOk;
 
   return json(
     {
       ok,
+      pipelineVersion: PIPELINE_VERSION,
+      aiJsonTransport: 'interactions',
       configured: CONFIGURED_MODELS,
       working: external.working,
       planWorking,
@@ -79,118 +82,73 @@ async function runExternalProbes(apiKey: string, now: number): Promise<ProbeStat
     const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
     if (res.ok) {
       const body = (await res.json()) as { models?: { name?: string }[] };
-      available = (body.models ?? [])
-        .map((model) => (model.name ?? '').replace(/^models\//, ''))
-        .filter(Boolean);
+      available = (body.models ?? []).map((model) => (model.name ?? '').replace(/^models\//, '')).filter(Boolean);
     } else {
-      listError = `${res.status}`;
+      listError = `${res.status}: ${(await res.text().catch(() => '')).slice(0, 180)}`;
     }
   } catch (error) {
     listError = String(error);
   }
 
-  const probes = await Promise.all(
-    CONFIGURED_MODELS.map(async (model) => {
-      try {
-        const res = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              contents: [{ role: 'user', parts: [{ text: 'ping' }] }],
-              generationConfig: { maxOutputTokens: 1 },
-            }),
-          },
-        );
-        return { model, ok: res.ok, status: res.status };
-      } catch (error) {
-        return { model, ok: false, status: 0, error: String(error) };
-      }
-    }),
-  );
-
-  const planner = await probePlanner(apiKey);
+  const planner = await probePlanner();
+  const availableSet = new Set(available);
+  const probes = CONFIGURED_MODELS.map((model) => ({
+    model,
+    ok: available.length ? availableSet.has(model) : model === planner.model && planner.ok,
+    status: available.length ? (availableSet.has(model) ? 200 : 404) : (model === planner.model && planner.ok ? 200 : 0),
+  }));
+  const working = probes.filter((probe) => probe.ok).map((probe) => probe.model);
+  if (planner.ok && !working.includes(planner.model)) working.unshift(planner.model);
 
   return {
     expiresAt: now + PROBE_CACHE_MS,
     available,
     listError,
     probes,
-    working: probes.filter((probe) => probe.ok).map((probe) => probe.model),
+    working,
     planner,
-    image: await probeImage(),
+    image: {
+      configured: Boolean(process.env.TOOLKIN_DEEPINFRA_API_KEY),
+      model: process.env.TOOLKIN_DEEPINFRA_IMAGE_MODEL ?? 'black-forest-labs/FLUX-1-schnell',
+      liveProbe: false,
+    },
   };
 }
 
-async function probePlanner(apiKey: string): Promise<ProbeState['planner']> {
-  let last = { model: MODELS_BY_PURPOSE.plan[0] ?? 'none', ok: false, status: 0, error: 'no_plan_models' };
-  for (const model of MODELS_BY_PURPOSE.plan) {
-    try {
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ role: 'user', parts: [{ text: 'Return JSON with ok=true.' }] }],
-            generationConfig: {
-              maxOutputTokens: 32,
-              thinkingConfig: { thinkingLevel: toGeminiRestThinkingLevel('minimal') },
-              responseMimeType: 'application/json',
-              responseJsonSchema: {
-                type: 'object',
-                properties: { ok: { type: 'boolean' } },
-                required: ['ok'],
-              },
-            },
-          }),
-        },
-      );
-      if (!res.ok) {
-        last = { model, ok: false, status: res.status, error: (await res.text()).slice(0, 400) };
-        continue;
-      }
-      const body = await res.json() as { candidates?: { content?: { parts?: { text?: string }[] } }[] };
-      const text = (body.candidates?.[0]?.content?.parts ?? []).map((part) => part.text ?? '').join('').trim();
-      let parsedOk = false;
-      try { parsedOk = JSON.parse(text)?.ok === true; } catch { parsedOk = false; }
-      if (parsedOk) return { model, ok: true, status: res.status };
-      last = { model, ok: false, status: res.status, error: 'structured_output_invalid' };
-    } catch (error) {
-      last = { model, ok: false, status: 0, error: String(error).slice(0, 400) };
-    }
-  }
-  return last;
-}
+async function probePlanner(): Promise<ProbeState['planner']> {
+  const result = await callGemini(
+    'Return the requested JSON and nothing else.',
+    'Return {"ok":true}.',
+    {
+      jsonOnly: true,
+      thinking: 'minimal',
+      purpose: 'plan',
+      responseSchema: {
+        type: 'OBJECT',
+        properties: { ok: { type: 'BOOLEAN' } },
+        required: ['ok'],
+        additionalProperties: false,
+      },
+    },
+  );
 
-async function probeImage(): Promise<Record<string, unknown>> {
-  const key = process.env.TOOLKIN_DEEPINFRA_API_KEY;
-  if (!key) return { ok: false, optional: true, reason: 'TOOLKIN_DEEPINFRA_API_KEY is not configured' };
-
-  const model = process.env.TOOLKIN_DEEPINFRA_IMAGE_MODEL ?? 'black-forest-labs/FLUX-1-schnell';
-  const size = process.env.TOOLKIN_DEEPINFRA_IMAGE_SIZE ?? '1024x1024';
-
-  try {
-    const res = await fetch('https://api.deepinfra.com/v1/openai/images/generations', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-      body: JSON.stringify({ model, prompt: 'a red circle on white background', size, n: 1 }),
-    });
-
-    const text = await res.text();
-    if (!res.ok) return { ok: false, model, status: res.status, detail: text.slice(0, 400) };
-
-    const payload = JSON.parse(text) as { data?: { b64_json?: string; url?: string }[] };
-    const entry = payload.data?.[0];
+  if (!result.ok) {
     return {
-      ok: Boolean(entry?.b64_json || entry?.url),
-      model,
-      size,
-      bytes: entry?.b64_json ? Math.round((entry.b64_json.length * 3) / 4) : 0,
-      shape: entry ? Object.keys(entry) : Object.keys(payload),
+      model: result.model ?? MODELS_BY_PURPOSE.plan[0] ?? 'none',
+      ok: false,
+      status: 0,
+      error: (result.error ?? 'planner_probe_failed').slice(0, 400),
+      transport: result.transport,
     };
-  } catch (error) {
-    return { ok: false, model, detail: String(error).slice(0, 300) };
   }
+
+  let parsedOk = false;
+  try { parsedOk = JSON.parse(result.text ?? '')?.ok === true; } catch { parsedOk = false; }
+  return {
+    model: result.model ?? MODELS_BY_PURPOSE.plan[0] ?? 'unknown',
+    ok: parsedOk,
+    status: parsedOk ? 200 : 502,
+    error: parsedOk ? undefined : 'structured_output_invalid',
+    transport: result.transport,
+  };
 }

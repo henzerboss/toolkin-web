@@ -416,7 +416,7 @@ export function buildRepairPrompt(raw: string, errors: string[]): string {
     'The previous answer failed validation.',
     '',
     'Your JSON:',
-    raw.slice(0, 12000),
+    raw.slice(0, 60000),
     '',
     'Errors:',
     errors.map((error) => `- ${error}`).join('\n'),

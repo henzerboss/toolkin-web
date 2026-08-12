@@ -17,6 +17,19 @@
 Порт наружу не выставляется — CloudPanel настраивает nginx как обратный прокси
 на `127.0.0.1:3010`.
 
+Для генерации Spec v2 дайте reverse proxy запас по времени. В CloudPanel →
+Vhost Editor для `toolkin.app` в `location /`/proxy-блоке должны быть:
+
+```nginx
+client_max_body_size 8m;
+proxy_connect_timeout 15s;
+proxy_send_timeout 150s;
+proxy_read_timeout 150s;
+```
+
+`client_max_body_size` нужен для camera→AI, а 150 секунд — для сложной генерации/refine.
+Мобильный клиент ждёт эти операции до 120 секунд.
+
 ## 2. DNS — до выпуска сертификата
 
 У регистратора две A-записи на IP сервера:
@@ -291,13 +304,13 @@ pm2 restart toolkin
 curl -s -H "X-Client-Token: $TOOLKIN_CLIENT_TOKEN" https://toolkin.app/api/health | python3 -m json.tool
 ```
 
-Роут делает настоящий вызов каждой уникальной модели из настроенных purpose-cascade и показывает,
-какие отвечают. Кроме простого `ping` он отдельно прогоняет **planner probe** с тем же
-REST-контрактом, который критичен для `/api/plan`: `thinkingConfig.thinkingLevel`
-в enum-формате и `responseJsonSchema`. Перед переключением трафика должны быть
-`planWorking: true`, `plannerProbe.ok: true` и `productionConfigOk: true`. Пустой
-`working` — генерация работать не будет; `suggestions` показывает модели, которые
-ключ реально видит. `productionConfigOk` в production подтверждает наличие
+Роут больше не пингует каждую модель отдельным платным `generateContent` вызовом.
+Он читает список доступных моделей и делает один маленький **planner probe через тот же
+Gemini Interactions API**, который использует production pipeline: `response_format`
+с `application/json` + JSON Schema и `thinking_level`. Перед переключением трафика
+должны быть `planWorking: true`, `plannerProbe.ok: true`,
+`plannerProbe.transport: "interactions"` и `productionConfigOk: true`.
+`suggestions` показывает модели, которые ключ реально видит. `productionConfigOk` в production подтверждает наличие
 `DATABASE_URL`, `TOOLKIN_CLIENT_TOKEN`, отдельного `TOOLKIN_PLAN_SECRET` и
 `TOOLKIN_REVENUECAT_WEBHOOK_SECRET`.
 

@@ -64,7 +64,11 @@ export async function POST(req: Request) {
 
   if (!result.ok) {
     return json(
-      { error: result.error, errors: result.errors, attempts: result.attempts },
+      {
+        error: result.error,
+        ...(process.env.TOOLKIN_DEBUG_ERRORS === 'true' ? { errors: result.errors } : {}),
+        attempts: result.attempts,
+      },
       result.error === 'validation_failed' || result.error === 'feature_incomplete' ? 422 : result.error === 'plan_invalid' || result.error === 'plan_required' ? 409 : 503,
       headers,
     );
