@@ -21,14 +21,14 @@ const KINDS:AppKind[]=['game','tracker','calculator','timer','converter','ai_too
 const FEATURE_SCHEMA:Record<string,unknown>={type:'OBJECT',properties:{id:{type:'STRING'},title:{type:'STRING'},description:{type:'STRING'},essential:{type:'BOOLEAN'},acceptanceCriteria:{type:'ARRAY',items:{type:'STRING'},minItems:1,maxItems:4},requiresRecords:{type:'BOOLEAN'},requiresStructuredAi:{type:'BOOLEAN'},requiresComponents:{type:'ARRAY',items:{type:'STRING',enum:COMPONENT_TYPES}},requiresActions:{type:'ARRAY',items:{type:'STRING',enum:ACTION_NAMES}},requiresCapabilities:{type:'ARRAY',items:{type:'STRING',enum:[...CAPABILITIES]}}},required:['id','title','description','essential','acceptanceCriteria','requiresRecords','requiresStructuredAi','requiresComponents','requiresActions','requiresCapabilities']};
 const SCREEN_SCHEMA:Record<string,unknown>={type:'OBJECT',properties:{id:{type:'STRING'},title:{type:'STRING'},purpose:{type:'STRING'}},required:['id','title','purpose']};
 const CUSTOM_SCHEMA:Record<string,unknown>={type:'OBJECT',properties:{name:{type:'STRING'},purpose:{type:'STRING'},strategy:{type:'STRING',enum:['compose','extend']}},required:['name','purpose','strategy']};
-const PLAN_SCHEMA:Record<string,unknown>={type:'OBJECT',properties:{kind:{type:'STRING',enum:KINDS},title:{type:'STRING'},summary:{type:'STRING'},navigation:{type:'STRING',enum:['single','stack','tabs']},screens:{type:'ARRAY',items:SCREEN_SCHEMA,minItems:1,maxItems:4},customComponents:{type:'ARRAY',items:CUSTOM_SCHEMA,maxItems:8},features:{type:'ARRAY',items:FEATURE_SCHEMA,minItems:3,maxItems:8},needsRecords:{type:'BOOLEAN'},needsStructuredAi:{type:'BOOLEAN'},capabilities:{type:'ARRAY',items:{type:'STRING',enum:[...CAPABILITIES]}},components:{type:'ARRAY',items:{type:'STRING',enum:COMPONENT_TYPES}}},required:['kind','title','summary','navigation','screens','customComponents','features','needsRecords','needsStructuredAi','capabilities','components'],propertyOrdering:['kind','title','summary','navigation','screens','customComponents','features','needsRecords','needsStructuredAi','capabilities','components']};
+const PLAN_SCHEMA:Record<string,unknown>={type:'OBJECT',properties:{kind:{type:'STRING',enum:KINDS},title:{type:'STRING'},summary:{type:'STRING'},navigation:{type:'STRING',enum:['single','stack','tabs']},screens:{type:'ARRAY',items:SCREEN_SCHEMA,minItems:1,maxItems:4},customComponents:{type:'ARRAY',items:CUSTOM_SCHEMA,maxItems:8},features:{type:'ARRAY',items:FEATURE_SCHEMA,minItems:1,maxItems:8},needsRecords:{type:'BOOLEAN'},needsStructuredAi:{type:'BOOLEAN'},capabilities:{type:'ARRAY',items:{type:'STRING',enum:[...CAPABILITIES]}},components:{type:'ARRAY',items:{type:'STRING',enum:COMPONENT_TYPES}}},required:['kind','title','summary','navigation','screens','customComponents','features','needsRecords','needsStructuredAi','capabilities','components'],propertyOrdering:['kind','title','summary','navigation','screens','customComponents','features','needsRecords','needsStructuredAi','capabilities','components']};
 
 const PLAN_SYSTEM=[
  'You are a senior mobile product manager and UX architect. Plan the PRODUCT first; do not write the runtime JSON yet.',
  'Design the ideal small mobile app for the user request before adapting it to the existing component library.',
  'The runtime supports 1-4 screens, stack or tabs navigation, records, AI/device actions, and safe app-specific composite components.',
  '',
- 'FEATURES: propose 3-8 genuinely useful user outcomes. Do not merely restate the request or name a UI component.',
+ 'FEATURES: propose 3-8 genuinely useful user outcomes when the product needs them, but never pad a simple app with fake features. Return at least 1. Do not merely restate the request or name a UI component.',
  'For each feature include 1-4 acceptanceCriteria: observable statements that make it clear the feature actually works.',
  'Set requiresRecords per feature when that outcome depends on persistent user-created data; set requiresStructuredAi only when that feature needs typed AI output.',
  'requiresComponents/actions/capabilities are STRICT minimums only. If a feature can be implemented with several UX patterns, leave component requirements empty rather than naming a substitute.',
@@ -81,8 +81,15 @@ export function planForFeatures(plan:Plan,selectedIds:string[]):Plan{
 }
 
 export async function planApp(request:string,locale:string):Promise<PlanResult>{
- const result=await callGemini(`${PLAN_SYSTEM}\n\nUser language/locale: ${locale}.`,`User request: "${request.slice(0,800)}"`,{jsonOnly:true,thinking:THINKING.plan,purpose:'plan',responseSchema:PLAN_SCHEMA});
- if(!result.ok)return{plan:FALLBACK,ok:false};const parsed=safeJsonParse<Partial<Plan>|null>(result.text??'',null);if(!parsed?.kind)return{plan:FALLBACK,ok:false};
- const screens=normalizeScreens(parsed.screens);let navigation:Plan['navigation']=parsed.navigation==='tabs'||parsed.navigation==='stack'?parsed.navigation:'single';if(screens.length===1)navigation='single';if(screens.length>1&&navigation==='single')navigation='stack';
- return{ok:true,plan:correct({kind:KINDS.includes(parsed.kind)?parsed.kind:'other',title:String(parsed.title??''),summary:String(parsed.summary??''),navigation,screens,customComponents:normalizeCustom(parsed.customComponents),features:normalizeFeatures(parsed.features),needsRecords:Boolean(parsed.needsRecords),needsStructuredAi:Boolean(parsed.needsStructuredAi),capabilities:Array.isArray(parsed.capabilities)?parsed.capabilities:[],components:Array.isArray(parsed.components)?parsed.components:[]})};
+ const system=`${PLAN_SYSTEM}\n\nUser language/locale: ${locale}.`;
+ const user=`User request: "${request.slice(0,800)}"`;
+ for(let attempt=0;attempt<2;attempt++){
+  const result=await callGemini(system,user,{jsonOnly:true,thinking:THINKING.plan,purpose:'plan',responseSchema:PLAN_SCHEMA});
+  if(!result.ok)continue;
+  const parsed=safeJsonParse<Partial<Plan>|null>(result.text??'',null);if(!parsed?.kind)continue;
+  const features=normalizeFeatures(parsed.features);if(features.length<1)continue;
+  const screens=normalizeScreens(parsed.screens);let navigation:Plan['navigation']=parsed.navigation==='tabs'||parsed.navigation==='stack'?parsed.navigation:'single';if(screens.length===1)navigation='single';if(screens.length>1&&navigation==='single')navigation='stack';
+  return{ok:true,plan:correct({kind:KINDS.includes(parsed.kind)?parsed.kind:'other',title:String(parsed.title??'').slice(0,40),summary:String(parsed.summary??'').slice(0,500),navigation,screens,customComponents:normalizeCustom(parsed.customComponents),features,needsRecords:Boolean(parsed.needsRecords),needsStructuredAi:Boolean(parsed.needsStructuredAi),capabilities:Array.isArray(parsed.capabilities)?parsed.capabilities:[],components:Array.isArray(parsed.components)?parsed.components:[]})};
+ }
+ return{plan:FALLBACK,ok:false};
 }

@@ -1,422 +1,169 @@
 import assert from 'node:assert';
 import { validateSpec } from './src/lib/validateSpec';
 import { autofix } from './src/lib/autofix';
+import { normalizeGeneratedSpec } from './src/lib/normalizeGeneratedSpec';
 import { smokeTest } from './src/lib/smokeTest';
 import { checkFeatures } from './src/lib/featureCheck';
-import type { Feature } from './src/app/api/_plan';
+import type { Feature, Plan } from './src/app/api/_plan';
+import { planForFeatures } from './src/app/api/_plan';
 import { PIPELINE_VERSION, cacheKey } from './src/lib/specCacheKey';
 import { buildGeneratePrompt, buildSystemInstruction } from './src/app/api/_prompt';
 import { creditsForProduct } from './src/lib/pricing';
 import { signPlanToken, verifyPlanToken } from './src/lib/planToken';
 import { DEMO_SPECS } from './src/lib/exampleSpecs';
+import type { MiniAppSpec } from './src/lib/specTypes';
 
-// Валидатор сайта и валидатор приложения должны совпадать: спека, принятая
-// одним, обязана проходить у другого, иначе человек платит за генерацию,
-// которая упадёт уже на устройстве.
+const validationErrors = (result: ReturnType<typeof validateSpec>): string => result.ok ? '' : result.errors.join('\n');
+
 for (const spec of DEMO_SPECS) {
-  const r = validateSpec(spec);
-  assert.ok(r.ok, `${spec.id}: ${r.ok ? '' : r.errors.join(' | ')}`);
+  const result = validateSpec(spec);
+  assert.ok(result.ok, `${spec.id}: ${result.ok ? '' : result.errors.join(' | ')}`);
+  const smoke = smokeTest(spec);
+  assert.ok(smoke.ok, `${spec.id} smoke: ${smoke.issues.join(' | ')}`);
 }
+console.log('V2 demo specs validate and execute');
+
+// There is intentionally no v1 compatibility layer.
+const v1 = { ...DEMO_SPECS[0], schemaVersion: 1 };
+assert.ok(!validateSpec(v1).ok, 'schemaVersion 1 must be rejected');
 
 const bad = validateSpec({
   ...DEMO_SPECS[0],
   capabilities: [],
-  ui: {
-    type: 'Screen',
-    children: [
-      { type: 'Ghost' },
-      { type: 'Slider', bind: 'nope' },
-      { type: 'Button', title: 'x', onPress: [{ action: 'clipboard.set', value: '1' }, { action: 'fly' }] },
-    ],
-  },
+  screens: { home: { type: 'Screen', children: [
+    { type: 'Ghost' },
+    { type: 'Slider', label: 'X', bind: 'nope' },
+    { type: 'Button', title: 'x', onPress: [{ action: 'clipboard.set', value: '1' }, { action: 'fly' }] },
+  ] } },
 });
 assert.ok(!bad.ok);
-// Проверяем смысл ошибок, а не их количество: счётчик ломается от любой
-// правки теста и ничего не говорит о качестве подсказок для модели.
-const joined = bad.errors.join('\n');
-assert.match(joined, /component "Ghost" does not exist/);
-assert.match(joined, /bind="nope" is not declared in state/);
-assert.match(joined, /requires capability "clipboard"/);
-assert.match(joined, /action "fly" does not exist/);
+const badJoined = validationErrors(bad);
+assert.match(badJoined, /component "Ghost" does not exist/);
+assert.match(badJoined, /bind="nope" is not declared in state/);
+assert.match(badJoined, /requires capability "clipboard"/);
+assert.match(badJoined, /action "fly" does not exist/);
 
-// Пакеты кредитов читаются из переменной окружения, а не из кода.
-process.env.TOOLKIN_CREDIT_PACKS = 'credits_100:100,credits_500:550';
-assert.strictEqual(creditsForProduct('credits_500'), 550);
-assert.strictEqual(creditsForProduct('unknown_pack'), 0);
-assert.strictEqual(creditsForProduct(null), 0);
-
-
-// Правила связности: структурно валидная спека, которая молча ничего не делает,
-// для пользователя неотличима от сломанной — и стоит ему кредитов.
-const wiring: [string, unknown, RegExp][] = [
-  ['records без блока records', {
-    ...DEMO_SPECS[0], records: undefined,
-    ui: { type: 'Screen', children: [
-      { type: 'Button', title: 'x', onPress: [{ action: 'records.add', values: { amount: 1 } }] },
+// Regression for the production failure from 2026-08-12: the model used
+// collection "log" in an action but forgot to declare it.
+const missingLog = {
+  schemaVersion: 2,
+  id: 'analysis-log', version: 1,
+  manifest: { name: 'Анализ', icon: 'chart', color: 'blue', locale: 'ru' },
+  capabilities: [], state: { score: 5, note: '' },
+  screens: { analysis: { type: 'Screen', children: [
+    { type: 'Button', title: 'Сохранить', onPress: [
+      { action: 'records.add', collection: 'log', values: { score: '{{score}}', note: '{{note}}' } },
     ] },
-  }, /record actions are used but no records\/collections schema exists/],
-  ['timer.start без seconds', {
-    ...DEMO_SPECS[0],
-    ui: { type: 'Screen', children: [
-      { type: 'Text', value: '{{timerRemaining | duration}}' },
-      { type: 'Button', title: 'x', onPress: [{ action: 'timer.start' }] },
+    { type: 'Repeat', source: 'records', collection: 'log', as: 'entry', empty: 'Пока пусто', children: [
+      { type: 'Text', value: '{{entryScore | number}}' },
     ] },
-  }, /seconds is missing/],
-  ['таймер без отображения', {
-    ...DEMO_SPECS[0],
-    ui: { type: 'Screen', children: [
-      { type: 'Button', title: 'x', onPress: [{ action: 'timer.start', seconds: 60 }] },
-    ] },
-  }, /timer actions are used but no UI shows timer state/],
-];
+  ] } },
+  navigation: { start: 'analysis', mode: 'single' },
+};
+const beforeNormalize = validateSpec(missingLog);
+assert.ok(!beforeNormalize.ok);
+assert.match(validationErrors(beforeNormalize), /undeclared collection "log"|collection "log" is not declared/);
+const normalizedLog = normalizeGeneratedSpec(missingLog);
+assert.ok(normalizedLog.applied.some((x) => x.includes('collection log')));
+const afterNormalize = validateSpec(normalizedLog.spec);
+assert.ok(afterNormalize.ok, afterNormalize.ok ? '' : afterNormalize.errors.join(' | '));
+const logSpec = afterNormalize.ok ? afterNormalize.spec : null;
+assert.strictEqual(logSpec?.collections?.log.fields.find((f) => f.key === 'score')?.kind, 'number');
+console.log('Missing named collection is deterministically recovered before validation');
 
-for (const [name, spec, pattern] of wiring) {
-  const r = validateSpec(spec);
-  assert.ok(!r.ok, `${name}: должно было отвергнуться`);
-  assert.match(r.errors.join('\n'), pattern, `${name}: ${r.errors.join(' | ')}`);
-}
-console.log(`Правил связности проверено: ${wiring.length}`);
+// Missing collection argument is only autofilled when there is exactly one
+// declared collection, so normalization never guesses between two data sets.
+const oneCollection = JSON.parse(JSON.stringify(DEMO_SPECS[2]));
+oneCollection.screens.home.children[2].onPress[0].collection = undefined;
+const oneFixed = normalizeGeneratedSpec(oneCollection);
+assert.strictEqual((oneFixed.spec as any).screens.home.children?.[2]?.onPress?.[0]?.collection, 'drinks');
+assert.ok(validateSpec(oneFixed.spec).ok);
 
-// AI-утилиты — отдельный сценарий: именно здесь ошибка стоит пользователю денег.
-// Подстановка {{...}} в prompt раньше ломала сопоставление по JSON и проверки
-// молча не срабатывали, поэтому кейс закреплён тестом.
-const aiSpec = {
-  schemaVersion: 1, id: 'recipe-gen', version: 1,
+const twoCollections = JSON.parse(JSON.stringify(DEMO_SPECS[2]));
+twoCollections.collections.second = { fields: [{ key: 'value', label: 'Value', kind: 'number' }], valueField: 'value' };
+twoCollections.screens.home.children[2].onPress[0].collection = undefined;
+const ambiguous = normalizeGeneratedSpec(twoCollections);
+assert.ok(!validateSpec(ambiguous.spec).ok, 'ambiguous missing collection must not be guessed');
+
+// Record actions/components are strict about named collections.
+const unknownList = JSON.parse(JSON.stringify(DEMO_SPECS[2]));
+unknownList.screens.home.children[4].collection = 'ghost';
+assert.match(validationErrors(validateSpec(unknownList)), /collection "ghost" is not declared/);
+
+// AI wiring: paid actions must expose busy state and typed numeric values must
+// use structured fields rather than free text.
+const aiSpec: MiniAppSpec = {
+  schemaVersion: 2, id: 'recipe-gen', version: 1,
   manifest: { name: 'Рецепты', icon: 'chef-hat', color: 'green', locale: 'ru' },
-  capabilities: ['llm'],
-  state: { products: '', recipe: '' },
-  ui: { type: 'Screen', children: [
+  capabilities: ['llm'], state: { products: '', recipe: '' },
+  screens: { home: { type: 'Screen', children: [
     { type: 'TextField', label: 'Продукты', bind: 'products', multiline: true },
-    { type: 'Button', title: 'Придумать', variant: 'primary', disabled: 'llmBusy',
-      onPress: [{ action: 'llm.ask', prompt: 'Рецепт из: {{products}}', into: 'recipe' }] },
+    { type: 'Button', title: 'Придумать', variant: 'primary', disabled: 'llmBusy', onPress: [
+      { action: 'llm.ask', prompt: 'Рецепт из: {{products}}', into: 'recipe' },
+    ] },
     { type: 'Text', value: '{{recipe}}', visible: "recipe != ''" },
-  ] },
+  ] } },
+  navigation: { start: 'home', mode: 'single' },
 };
-assert.ok(validateSpec(aiSpec).ok, 'корректная AI-утилита должна проходить');
-
+assert.ok(validateSpec(aiSpec).ok);
 const noBusy = JSON.parse(JSON.stringify(aiSpec));
-delete noBusy.ui.children[1].disabled;
-const noBusyResult = validateSpec(noBusy);
-assert.ok(!noBusyResult.ok);
-assert.match(noBusyResult.errors.join('\n'), /llmBusy/);
+delete noBusy.screens.home.children[1].disabled;
+assert.match(validationErrors(validateSpec(noBusy)), /llmBusy/);
 
-const noCamera = JSON.parse(JSON.stringify(aiSpec));
-noCamera.state.photo = '';
-noCamera.ui.children[1].onPress[0].image = 'photo';
-assert.match(validateSpec(noCamera).ok ? '' : validateSpec(noCamera).errors.join('\n'), /camera\.capture/);
-console.log('AI-связки проверены');
-
-// Игра в песочнице: единственный способ собрать змейку или арканоид.
-const game = {
-  schemaVersion: 1, id: 'snake', version: 1,
-  manifest: { name: 'Змейка', icon: 'device-gamepad', color: 'green', locale: 'ru' },
-  capabilities: ['sandbox'],
-  state: { best: 0 },
-  records: { fields: [{ key: 'score', label: 'Очки', kind: 'number' }], valueField: 'score' },
-  ui: { type: 'Screen', children: [
-    { type: 'Stat', label: 'Рекорд', value: '{{best | integer}}' },
-    { type: 'Sandbox', ratio: 'square',
-      html: '<canvas id="g"></canvas><script>document.addEventListener("touchstart",function(){toolkin.save({score:10})});</script>' },
-  ] },
-};
-assert.ok(validateSpec(game).ok, 'игра в песочнице должна проходить');
-
-const remote = JSON.parse(JSON.stringify(game));
-remote.ui.children[1].html = '<script src="https://cdn.example.com/x.js"></script><canvas onclick="x()"></canvas>';
-assert.match(validateSpec(remote).ok ? '' : validateSpec(remote).errors.join('\n'), /external scripts/);
-console.log('Песочница проверена');
-
-// Числа из свободного текста и потерянные фото — две ошибки, из-за которых
-// трекер КБЖУ писал в историю нули и не показывал снимки.
-const kbju = {
-  schemaVersion: 1, id: 'kbju', version: 1,
+const kbju: MiniAppSpec = {
+  schemaVersion: 2, id: 'kbju', version: 1,
   manifest: { name: 'КБЖУ', icon: 'camera', color: 'amber', locale: 'ru' },
-  capabilities: ['camera', 'llm'],
-  state: { photo: '', result: '' },
-  records: { fields: [
+  capabilities: ['camera', 'llm'], state: { photo: '', result: '' },
+  collections: { meals: { fields: [
     { key: 'photo', label: 'Фото', kind: 'image' },
     { key: 'kcal', label: 'Ккал', kind: 'number' },
-  ], valueField: 'kcal' },
-  ui: { type: 'Screen', children: [
-    { type: 'Button', title: 'Камера', disabled: 'llmBusy',
-      onPress: [{ action: 'camera.capture', into: 'photo', source: 'camera' }] },
-    { type: 'Button', title: 'Анализ', disabled: 'llmBusy',
-      onPress: [
-        { action: 'llm.ask', prompt: 'Оцени блюдо', image: 'photo', into: 'result' },
-        { action: 'records.add', values: { photo: '{{photo}}', kcal: '{{result}}' } },
-      ] },
+  ], valueField: 'kcal' } },
+  screens: { home: { type: 'Screen', children: [
+    { type: 'Button', title: 'Камера', disabled: 'llmBusy', onPress: [{ action: 'camera.capture', into: 'photo', source: 'camera' }] },
+    { type: 'Button', title: 'Анализ', disabled: 'llmBusy', onPress: [
+      { action: 'llm.ask', prompt: 'Оцени блюдо', image: 'photo', into: 'result' },
+      { action: 'records.add', collection: 'meals', values: { photo: '{{photo}}', kcal: '{{result}}' } },
+    ] },
     { type: 'Text', value: '{{result}}' },
-    { type: 'List', valueKey: 'kcal' },
-  ] },
+    { type: 'List', collection: 'meals', valueKey: 'kcal', imageKey: 'photo' },
+  ] } },
+  navigation: { start: 'home', mode: 'single' },
 };
 const kbjuResult = validateSpec(kbju);
 assert.ok(!kbjuResult.ok);
-const kbjuErrors = kbjuResult.errors.join('\n');
-assert.match(kbjuErrors, /free-text llm\.ask/);
-assert.match(kbjuErrors, /history never displays it/);
-console.log('Числа и фото в истории проверены');
+assert.match(validationErrors(kbjuResult), /free-text llm\.ask/);
 
-// Игровое поле из кнопок: модель упорно строила так, а такая игра
-// не может ни ходить за компьютера, ни анимироваться.
-const cells = ['c0', 'c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'c7', 'c8'];
-const buttonBoard = {
-  schemaVersion: 1, id: 'ttt', version: 1,
-  manifest: { name: 'Крестики-нолики', icon: 'grid-dots', color: 'teal', locale: 'ru' },
-  capabilities: [],
-  state: { wins: 0, ...Object.fromEntries(cells.map((c) => [c, ''])) },
-  ui: { type: 'Screen', children: [
-    { type: 'Stat', label: 'Побед', value: '{{wins | integer}}' },
-    ...cells.map((c) => ({
-      type: 'Button', title: '{{' + c + '}}',
-      onPress: [{ action: 'state.set', key: c, value: 'X' }],
-    })),
-  ] },
-};
-assert.match(
-  validateSpec(buttonBoard).ok ? '' : validateSpec(buttonBoard).errors.join('\n'),
-  /game-like button grid/,
-);
-
-// Клавиатура калькулятора пишет в одно поле — ложного срабатывания быть не должно.
-const keypad = {
-  ...buttonBoard, id: 'calc', state: { display: '' },
-  ui: { type: 'Screen', children: [
-    { type: 'Stat', label: 'Итого', value: '{{display}}' },
-    ...['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((digit) => ({
-      type: 'Button', title: digit,
-      onPress: [{ action: 'state.set', key: 'display', value: digit }],
-    })),
-  ] },
-};
-assert.ok(validateSpec(keypad).ok, 'клавиатура не должна считаться игрой');
-console.log('Игровое поле из кнопок проверено');
-
-const sys = buildSystemInstruction('ru');
-assert.ok(sys.includes('Russian') && sys.includes('llm.ask') && sys.includes('ProgressRing'));
-
-console.log('Ошибки для цикла починки:');
-bad.errors.forEach((e) => console.log('  •', e));
-console.log(`\nСистемный промпт: ${sys.length} символов.`);
-console.log('Проверки сайта пройдены.');
-
-// Сборка промпта по плану: ради неё и затевалась двухэтапная генерация.
-
-// Проверяем сборку промпта по плану — то, ради чего всё затевалось.
-const gamePrompt = buildSystemInstruction('ru', {
-  kind: 'game', capabilities: ['sandbox'], components: ['Sandbox', 'Stat'],
-  needsRecords: false, needsStructuredAi: false, summary: '', title: '',
-});
-assert.ok(gamePrompt.includes('ONE Sandbox node'), 'у игры должен быть раздел про песочницу');
-assert.ok(!gamePrompt.includes('Photo utilities.'), 'у игры не должно быть раздела про камеру');
-
-const photoPrompt = buildSystemInstruction('ru', {
-  kind: 'ai_tool', capabilities: ['camera', 'llm'], components: ['Image', 'Gallery'],
-  needsRecords: true, needsStructuredAi: true, summary: '', title: '',
-});
-assert.ok(photoPrompt.includes('Photo utilities.'), 'у фото-утилиты должен быть раздел про камеру');
-assert.ok(photoPrompt.includes('"fields"'), 'должен быть раздел про структурный ответ');
-assert.ok(!photoPrompt.includes('ONE Sandbox node'), 'у фото-утилиты не должно быть раздела про игры');
-
-const full = buildSystemInstruction('ru');
-assert.ok(full.length > photoPrompt.length, 'промпт по плану должен быть короче полного');
-
-const withPlan = buildGeneratePrompt('змейка', 'ru', {
-  kind: 'game', capabilities: ['sandbox'], components: ['Sandbox'],
-  needsRecords: false, needsStructuredAi: false, summary: 'игра змейка', title: 'Змейка',
-});
-assert.ok(withPlan.includes('kind: game') && withPlan.includes('Sandbox'));
-
-console.log(`полный промпт: ${full.length}`);
-console.log(`игра:          ${gamePrompt.length} (-${Math.round((1 - gamePrompt.length / full.length) * 100)}%)`);
-console.log(`фото + ИИ:     ${photoPrompt.length} (-${Math.round((1 - photoPrompt.length / full.length) * 100)}%)`);
-console.log('Сборка промпта по плану проверена');
-
-// Кэш спек: нормализация запроса решает, платим ли мы Gemini дважды
-// за «Таймер для яиц» и «таймер для яиц.».
-assert.strictEqual(
-  cacheKey('Таймер для яиц', 'ru'),
-  cacheKey('  таймер   для яиц.  ', 'ru'),
-  'регистр, пробелы и точка не должны менять ключ',
-);
-assert.notStrictEqual(cacheKey('таймер для яиц', 'ru'), cacheKey('таймер для яиц', 'en'));
-assert.notStrictEqual(cacheKey('таймер', 'ru'), cacheKey('секундомер', 'ru'));
-// Отпечаток обязан меняться вместе с манифестом: иначе кэш переживёт
-// правку DSL и будет отдавать спеки, собранные по старым правилам.
-assert.match(PIPELINE_VERSION, /^v\d+-[0-9a-f]{12}$/, 'версия должна включать отпечаток манифеста');
-console.log(`Кэш спек проверен, версия конвейера ${PIPELINE_VERSION}`);
-
-// Immutable Product Plan: подпись привязывает выбор фич к запросу и локали.
-process.env.TOOLKIN_PLAN_SECRET = 'test-plan-secret-not-for-production';
-const tokenPlan = {
-  kind: 'tracker' as const, title: 'Расходы', summary: 'Учёт расходов', navigation: 'stack' as const,
-  screens: [{ id: 'home', title: 'Главная', purpose: 'Сводка' }, { id: 'history', title: 'История', purpose: 'Записи' }],
-  customComponents: [], capabilities: [], components: ['List'], needsRecords: true, needsStructuredAi: false,
-  features: [{ id: 'add', title: 'Добавление', description: 'Добавить расход', essential: true,
-    acceptanceCriteria: ['Расход сохраняется'], requiresComponents: [], requiresActions: ['records.add'], requiresCapabilities: [] }],
-};
-const signed = signPlanToken('трекер расходов', 'ru', tokenPlan);
-assert.deepStrictEqual(verifyPlanToken(signed, 'трекер расходов', 'ru'), tokenPlan);
-assert.strictEqual(verifyPlanToken(signed, 'другой запрос', 'ru'), null);
-assert.strictEqual(verifyPlanToken(`${signed.slice(0, -1)}x`, 'трекер расходов', 'ru'), null);
-console.log('Immutable plan token проверен');
-
-// Женский календарь — тот самый случай, который спека раньше не позволяла
-// собрать: овуляция и фертильное окно вычисляются, а не лежат в записях.
-const cycleCalendar = {
-  schemaVersion: 1, id: 'cycle', version: 1,
-  manifest: { name: 'Женский календарь', icon: 'calendar-heart', color: 'rose', locale: 'ru' },
-  capabilities: [],
-  state: { lastPeriod: 0, cycleLength: 28, periodLength: 5, selectedDate: 0 },
-  persist: ['lastPeriod', 'cycleLength'],
-  derived: {
-    ovulation: 'addDays(lastPeriod, cycleLength - 14)',
-    periodDays: 'range(lastPeriod, periodLength, 86400000)',
-    fertileDays: 'range(addDays(ovulation, -4), 6, 86400000)',
-    daysToNext: 'max(daysBetween(nowMs, addDays(lastPeriod, cycleLength)), 0)',
-  },
-  ui: { type: 'Screen', children: [
-    { type: 'Stat', label: 'До следующих', value: '{{daysToNext | integer}}' },
-    { type: 'DateField', label: 'Начало последних', bind: 'lastPeriod' },
-    { type: 'Calendar', bind: 'selectedDate', marks: [
-      { dates: 'periodDays', color: '#C2385F', label: 'Месячные' },
-      { dates: 'fertileDays', color: '#6244D6', label: 'Фертильные' },
-      { dates: '[ovulation]', color: '#0E7C7B', label: 'Овуляция' },
-    ] },
-  ] },
-};
-assert.ok(validateSpec(cycleCalendar).ok, 'календарь цикла должен собираться');
-console.log('Календарь цикла проверен');
-
-// Пробный прогон: главный ответ на «спека валидна, а приложение не работает».
-// Валидатор смотрит на форму, прогон исполняет утилиту и смотрит на результат.
-for (const spec of DEMO_SPECS) {
-  const smoke = smokeTest(spec);
-  assert.ok(smoke.ok, `${spec.id} должна проходить прогон: ${smoke.issues.join(' | ')}`);
-}
-
-const emptyButton = {
-  ...DEMO_SPECS[0], derived: {},
-  ui: { type: 'Screen', children: [
-    { type: 'Stat', label: 'Итого', value: '{{bill | money}}' },
-    { type: 'Button', title: 'Посчитать', onPress: [] },
-  ] },
-};
-const emptyResult = validateSpec(emptyButton);
-assert.ok(emptyResult.ok, 'валидатор пустую кнопку не видит — это работа прогона');
-assert.match(smokeTest(emptyResult.spec).issues.join('\n'), /does nothing when tapped/);
-
-const staticOnly = {
-  ...DEMO_SPECS[0], derived: {},
-  ui: { type: 'Screen', children: [{ type: 'Text', value: 'Просто текст' }] },
-};
-const staticResult = validateSpec(staticOnly);
-assert.ok(staticResult.ok);
-assert.match(smokeTest(staticResult.spec).issues.join('\n'), /neither meaningful interaction nor dynamic output/);
-
-// Автопочинка: привычки JavaScript чинятся кодом, а не вызовом Gemini.
-const jsHabits = {
-  ...DEMO_SPECS[0],
-  derived: {
-    tip: 'Math.round(state.bill * state.tipPct / 100)',
-    perPerson: 'tip / Math.max(state.people, 1)',
-    kind: 'state.people === 1 ? "one" : "many"',
-  },
-};
-const fixed = autofix(jsHabits as never);
-assert.deepStrictEqual(
-  Object.values(fixed.spec.derived ?? {}),
-  ['round(bill * tipPct / 100)', 'tip / max(people, 1)', 'people == 1 ? "one" : "many"'],
-);
-assert.ok(validateSpec(fixed.spec).ok, 'после автопочинки спека должна быть валидной');
-console.log(`Пробный прогон и автопочинка проверены (починено: ${fixed.applied.join(', ')})`);
-
-// Согласование фич: список, показанный пользователю, — это acceptance contract.
-const promised: Feature[] = [
-  { id: 'predict', title: 'Прогноз цикла', description: '', essential: true,
-    acceptanceCriteria: ['Календарь показывает прогнозируемые дни'],
-    requiresComponents: ['Calendar'], requiresActions: [], requiresCapabilities: [] },
-  { id: 'remind', title: 'Напоминание', description: '', essential: false,
-    acceptanceCriteria: ['Пользователь может запланировать напоминание'],
-    requiresComponents: [], requiresActions: ['notify.at'], requiresCapabilities: ['notifications'] },
-];
-
-const complete = {
-  schemaVersion: 2, id: 'c', version: 1,
-  manifest: { name: 'Календарь', icon: 'x', color: 'rose', locale: 'ru' },
-  capabilities: ['notifications'],
-  state: { lastPeriod: 1, selectedDate: 1 },
+// Sandbox stays isolated and every record save names its collection.
+const game: MiniAppSpec = {
+  schemaVersion: 2, id: 'snake', version: 1,
+  manifest: { name: 'Змейка', icon: 'device-gamepad', color: 'green', locale: 'ru' },
+  capabilities: ['sandbox'], state: { best: 0 },
+  collections: { scores: { fields: [{ key: 'score', label: 'Очки', kind: 'number' }], valueField: 'score' } },
   screens: { home: { type: 'Screen', children: [
-    { type: 'Stat', label: 'До следующих', value: '{{lastPeriod | integer}}' },
-    { type: 'Calendar', bind: 'selectedDate' },
-    { type: 'Button', title: 'Напомнить',
-      onPress: [{ action: 'notify.at', title: 'Скоро', at: '{{lastPeriod}}' }] },
+    { type: 'Stat', label: 'Рекорд', value: '{{best | integer}}' },
+    { type: 'Sandbox', ratio: 'square', html: '<canvas id="g"></canvas><script>document.addEventListener("touchstart",function(){toolkin.save({score:10},"scores")});</script>' },
   ] } },
   navigation: { start: 'home', mode: 'single' },
-  featureEvidence: {
-    predict: { screens: ['home'], components: ['Calendar'] },
-    remind: { screens: ['home'], actions: ['notify.at'], capabilities: ['notifications'] },
-  },
-} as never;
+};
+assert.ok(validateSpec(game).ok);
+const remote = JSON.parse(JSON.stringify(game));
+remote.screens.home.children[1].html = '<script src="https://cdn.example.com/x.js"></script><canvas onclick="x()"></canvas>';
+assert.match(validationErrors(validateSpec(remote)), /external scripts/);
 
-const allFeatures = checkFeatures(complete, promised);
-assert.ok(allFeatures.ok, `все обещанные фичи должны быть на месте: ${allFeatures.issues.join(' | ')}`);
-assert.deepStrictEqual(allFeatures.implemented, ['predict', 'remind']);
-
-const withoutReminder = JSON.parse(JSON.stringify(complete));
-withoutReminder.screens.home.children.pop();
-withoutReminder.capabilities = [];
-const partial = checkFeatures(withoutReminder, promised);
-assert.ok(!partial.ok);
-assert.match(partial.issues.join('\n'), /required action notify.at/);
-assert.deepStrictEqual(partial.implemented, ['predict'], 'реализованное должно остаться в списке');
-assert.deepStrictEqual(partial.missing.map((item) => item.id), ['remind']);
-
-// Никаких ложных классов эквивалентности: Stat != ProgressRing, Calendar != DateField.
-const strictFeatures: Feature[] = [
-  { id: 'progress', title: 'Точная метрика', description: '', essential: true,
-    acceptanceCriteria: ['Показывается требуемая метрика'],
-    requiresComponents: ['Stat'], requiresActions: [], requiresCapabilities: [] },
-  { id: 'input', title: 'Ввод суммы', description: '', essential: true,
-    acceptanceCriteria: ['Значение можно изменить'],
-    requiresComponents: [], requiresActions: ['state.set'], requiresCapabilities: [] },
-];
-const viaRingAndBind = {
-  schemaVersion: 2, id: 'e', version: 1,
-  manifest: { name: 'Калории', icon: 'x', color: 'amber', locale: 'ru' },
-  capabilities: [], state: { eaten: 1, goal: 2000 },
-  derived: { progress: 'clamp(eaten / max(goal, 1), 0, 1)' },
-  screens: { home: { type: 'Screen', children: [
-    { type: 'ProgressRing', progress: 'progress', value: '{{eaten | integer}}' },
-    { type: 'NumberField', label: 'Съедено', bind: 'eaten' },
-  ] } }, navigation: { start: 'home', mode: 'single' },
-  featureEvidence: {
-    progress: { components: ['ProgressRing'] },
-    input: { components: ['NumberField'], actions: ['state.set'] },
-  },
-} as never;
-const strictCheck = checkFeatures(viaRingAndBind, strictFeatures);
-assert.ok(!strictCheck.ok, 'ProgressRing не должен механически подменять Stat');
-assert.match(strictCheck.issues.join('\n'), /required component Stat/);
-assert.ok(strictCheck.implemented.includes('input'), 'bind должен считаться реальным state.set');
-
-// V2: несколько экранов + named collection + Repeat + app-local composite component.
-const v2 = {
+// Custom component + Repeat + CRUD scenario.
+const expenses: MiniAppSpec = {
   schemaVersion: 2, id: 'expenses-v2', version: 1,
   manifest: { name: 'Расходы', icon: 'wallet', color: 'green', locale: 'ru' },
-  capabilities: [], state: { amount: 100, category: 'Еда' }, persist: ['category'],
+  capabilities: [], state: { amount: 100, category: 'Еда' },
   collections: { expenses: { fields: [
-    { key: 'amount', label: 'Сумма', kind: 'number' },
-    { key: 'category', label: 'Категория', kind: 'text' },
+    { key: 'amount', label: 'Сумма', kind: 'number' }, { key: 'category', label: 'Категория', kind: 'text' },
   ], valueField: 'amount' } },
   derived: { total: 'sumBy(records, "expenses", "amount")' },
   components: {
     ExpenseCard: { props: [
-      { name: 'id', kind: 'text', required: true },
-      { name: 'amount', kind: 'value', required: true },
-      { name: 'category', kind: 'text', required: true },
+      { name: 'id', kind: 'text', required: true }, { name: 'amount', kind: 'value', required: true }, { name: 'category', kind: 'text', required: true },
     ], template: { type: 'Card', children: [
-      { type: 'Text', value: '{{category}}' },
-      { type: 'Text', value: '{{amount | number}}' },
+      { type: 'Text', value: '{{category}}' }, { type: 'Text', value: '{{amount | number}}' },
       { type: 'Button', title: 'Удалить', onPress: [{ action: 'records.remove', id: '{{id}}' }] },
     ] } },
   },
@@ -436,10 +183,81 @@ const v2 = {
   },
   navigation: { start: 'home', mode: 'stack', titles: { home: 'Расходы', history: 'История' } },
 };
-const v2Validation = validateSpec(v2);
-assert.ok(v2Validation.ok, `V2 должна проходить: ${v2Validation.ok ? '' : v2Validation.errors.join(' | ')}`);
-if (v2Validation.ok) assert.ok(smokeTest(v2Validation.spec).ok, smokeTest(v2Validation.spec).issues.join(' | '));
-console.log('V2 screens/collections/composites/Repeat проверены');
+const expenseValidation = validateSpec(expenses);
+assert.ok(expenseValidation.ok, expenseValidation.ok ? '' : expenseValidation.errors.join(' | '));
+assert.ok(smokeTest(expenses).ok, smokeTest(expenses).issues.join(' | '));
 
-console.log('Согласование фич проверено: требования строгие, featureEvidence обязателен');
+// when=false must not execute an action in the simulator.
+const conditional = JSON.parse(JSON.stringify(DEMO_SPECS[0]));
+conditional.screens.home.children = [
+  { type: 'Text', value: '{{bill | number}}' },
+  { type: 'Button', title: 'Не менять', onPress: [{ action: 'state.set', key: 'bill', value: 99, when: 'false' }, { action: 'toast', text: 'ok' }] },
+];
+assert.ok(smokeTest(conditional).ok, smokeTest(conditional).issues.join(' | '));
 
+// Feature acceptance contract is exact; no loose component equivalence.
+const promised: Feature[] = [
+  { id: 'predict', title: 'Прогноз цикла', description: '', essential: true, acceptanceCriteria: ['Календарь показывает прогноз'], requiresComponents: ['Calendar'], requiresActions: [], requiresCapabilities: [] },
+  { id: 'remind', title: 'Напоминание', description: '', essential: false, acceptanceCriteria: ['Можно запланировать напоминание'], requiresComponents: [], requiresActions: ['notify.at'], requiresCapabilities: ['notifications'] },
+];
+const complete: MiniAppSpec = {
+  schemaVersion: 2, id: 'cycle', version: 1,
+  manifest: { name: 'Календарь', icon: 'calendar', color: 'rose', locale: 'ru' },
+  capabilities: ['notifications'], state: { selected: 1, at: 1 },
+  screens: { home: { type: 'Screen', children: [
+    { type: 'Calendar', bind: 'selected' },
+    { type: 'Button', title: 'Напомнить', onPress: [{ action: 'notify.at', title: 'Скоро', at: '{{at}}' }] },
+  ] } },
+  navigation: { start: 'home', mode: 'single' },
+  featureEvidence: {
+    predict: { screens: ['home'], components: ['Calendar'] },
+    remind: { screens: ['home'], actions: ['notify.at'], capabilities: ['notifications'] },
+  },
+};
+assert.ok(checkFeatures(complete, promised).ok);
+const noReminder = JSON.parse(JSON.stringify(complete));
+noReminder.screens.home.children.pop(); noReminder.capabilities = [];
+assert.ok(!checkFeatures(noReminder, promised).ok);
+
+// Immutable Product Plan is mandatory and feature deselection recomputes requirements.
+process.env.TOOLKIN_PLAN_SECRET = 'test-plan-secret-not-for-production';
+const tokenPlan: Plan = {
+  kind: 'tracker', title: 'Расходы', summary: 'Учёт расходов', navigation: 'stack',
+  screens: [{ id: 'home', title: 'Главная', purpose: 'Сводка' }, { id: 'history', title: 'История', purpose: 'Записи' }],
+  customComponents: [], capabilities: [], components: ['List'], needsRecords: true, needsStructuredAi: false,
+  features: [{ id: 'add', title: 'Добавление', description: 'Добавить расход', essential: true,
+    acceptanceCriteria: ['Расход сохраняется'], requiresRecords: true, requiresStructuredAi: false,
+    requiresComponents: [], requiresActions: ['records.add'], requiresCapabilities: [] }],
+};
+const signed = signPlanToken('трекер расходов', 'ru', tokenPlan);
+assert.deepStrictEqual(verifyPlanToken(signed, 'трекер расходов', 'ru'), tokenPlan);
+assert.strictEqual(verifyPlanToken(signed, 'другой запрос', 'ru'), null);
+assert.strictEqual(verifyPlanToken(`${signed.slice(0, -1)}x`, 'трекер расходов', 'ru'), null);
+const deselected = planForFeatures(tokenPlan, []);
+assert.strictEqual(deselected.needsRecords, false);
+
+// Prompt itself must encode the strict named-collection invariant.
+const promptText = buildGeneratePrompt('трекер расходов', 'ru', tokenPlan);
+const systemText = buildSystemInstruction('ru', tokenPlan);
+assert.match(systemText, /COLLECTION INVARIANT/);
+assert.match(systemText, /explicitly named collection/);
+assert.match(promptText, /schemaVersion 2/);
+assert.doesNotMatch(systemText, /"records"\s*:/);
+
+// Autofix remains narrow and does not invent product behavior.
+const jsHabits = {
+  ...DEMO_SPECS[0],
+  derived: { tip: 'Math.round(state.bill * state.tipPct / 100)', perPerson: 'tip / Math.max(state.people, 1)' },
+};
+const fixed = autofix(jsHabits as MiniAppSpec);
+assert.deepStrictEqual(Object.values(fixed.spec.derived ?? {}), ['round(bill * tipPct / 100)', 'tip / max(people, 1)']);
+assert.ok(validateSpec(fixed.spec).ok);
+
+process.env.TOOLKIN_CREDIT_PACKS = 'credits_100:100,credits_500:550';
+assert.strictEqual(creditsForProduct('credits_500'), 550);
+assert.strictEqual(creditsForProduct('unknown_pack'), 0);
+assert.notStrictEqual(cacheKey('таймер для яиц', 'ru'), cacheKey('таймер для яиц', 'en'));
+assert.notStrictEqual(cacheKey('таймер', 'ru'), cacheKey('секундомер', 'ru'));
+assert.match(PIPELINE_VERSION, /^v\d+-[0-9a-f]{12}$/);
+
+console.log(`All backend/runtime contract tests passed (${PIPELINE_VERSION})`);

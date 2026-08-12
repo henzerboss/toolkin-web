@@ -32,8 +32,10 @@ const hasCapability = (name: string) => (spec: Record<string, unknown>) =>
     ? null
     : `ожидалась capability "${name}"`;
 
-const hasComponent = (type: string) => (spec: Record<string, unknown>) =>
-  JSON.stringify(spec.ui).includes(`"${type}"`) ? null : `ожидался компонент ${type}`;
+const hasComponent = (type: string) => (spec: Record<string, unknown>) => {
+  const implementation = JSON.stringify({ screens: spec.screens, components: spec.components });
+  return implementation.includes(`"${type}"`) ? null : `ожидался компонент ${type}`;
+};
 
 const both = (...checks: ((spec: Record<string, unknown>) => string | null)[]) =>
   (spec: Record<string, unknown>) => checks.map((check) => check(spec)).filter(Boolean).join('; ') || null;

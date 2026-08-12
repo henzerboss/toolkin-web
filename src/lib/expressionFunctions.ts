@@ -23,8 +23,8 @@ const objects = (value: JsonValue): Record<string, JsonValue>[] =>
     : [];
 
 const recordsIn = (value: JsonValue, collection: JsonValue): Record<string, JsonValue>[] => {
-  const name = String(collection ?? 'default');
-  return objects(value).filter((item) => String(item.collection ?? 'default') === name);
+  const name = String(collection ?? '');
+  return objects(value).filter((item) => String(item.collection ?? '') === name);
 };
 
 const fieldValue = (item: Record<string, JsonValue>, key: JsonValue): JsonValue =>

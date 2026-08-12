@@ -80,9 +80,15 @@ export interface MiniAppManifest {
 
 export type AccentName = 'blue' | 'green' | 'amber' | 'violet' | 'rose' | 'teal';
 
+/**
+ * Toolkin generated-app contract.
+ *
+ * There is intentionally one format only: schemaVersion 2. The product has not
+ * shipped a previous public runtime, so carrying v1 branches would add failure
+ * modes without protecting real user data.
+ */
 export interface MiniAppSpec {
-  /** v1 is supported for installed apps; generators should emit v2. */
-  schemaVersion: 1 | 2;
+  schemaVersion: 2;
   id: string;
   version: number;
   manifest: MiniAppManifest;
@@ -90,15 +96,11 @@ export interface MiniAppSpec {
   state: Record<string, JsonValue>;
   persist?: string[];
   derived?: Record<string, Expression>;
-  /** v1/default collection compatibility. */
-  records?: RecordSchema;
-  /** v2 named collections. */
+  /** Every persistent record set is explicitly named. */
   collections?: Record<string, RecordSchema>;
-  /** v1 root; accepted only for backward compatibility. */
-  ui?: UiNode;
-  /** v2 screen roots. */
-  screens?: Record<string, UiNode>;
-  navigation?: NavigationSpec;
+  /** One to four screen roots. */
+  screens: Record<string, UiNode>;
+  navigation: NavigationSpec;
   /** App-local declarative composite components. Never native source code. */
   components?: Record<string, CustomComponentSpec>;
   design?: DesignSpec;
@@ -109,22 +111,19 @@ export interface MiniAppSpec {
 export interface StoredRecord {
   id: string;
   createdAt: number;
-  collection?: string;
+  collection: string;
   values: Record<string, JsonValue>;
 }
 
 export function getScreenRoots(spec: MiniAppSpec): Record<string, UiNode> {
-  if (spec.screens && Object.keys(spec.screens).length) return spec.screens;
-  return spec.ui ? { main: spec.ui } : {};
+  return spec.screens;
 }
 
 export function getStartScreen(spec: MiniAppSpec): string {
-  const roots = getScreenRoots(spec);
-  if (spec.navigation?.start && roots[spec.navigation.start]) return spec.navigation.start;
-  return Object.keys(roots)[0] ?? 'main';
+  if (spec.navigation.start && spec.screens[spec.navigation.start]) return spec.navigation.start;
+  return Object.keys(spec.screens)[0] ?? 'home';
 }
 
-export function getCollectionSchema(spec: MiniAppSpec, collection = 'default'): RecordSchema | undefined {
-  if (collection === 'default') return spec.records;
+export function getCollectionSchema(spec: MiniAppSpec, collection: string): RecordSchema | undefined {
   return spec.collections?.[collection];
 }

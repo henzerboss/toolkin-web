@@ -55,13 +55,13 @@ const PLAYBOOK: Record<string, string[]> = {
   ],
 
   records: [
-    'Record history. The records.add action works only together with a records block:',
-    '  "records": { "fields": [{ "key": "amount", "label": "Amount", "kind": "number" }], "valueField": "amount" },',
-    '  "derived": { "total": "sum(recordValues)" },',
-    '  button: { "action": "records.add", "values": { "amount": "{{portion}}" } }',
-    'Without the records block entries vanish on close and recordValues stays empty.',
-    'Default to List for showing history — it is readable on a narrow screen.',
-    'Use Table only for two or three short numeric columns; four columns do not fit a phone.',
+    'Persistent history always uses an explicitly named collection. Never use an undeclared or implicit/default collection:',
+    '  "collections": { "drinks": { "fields": [{ "key": "amount", "label": "Amount", "kind": "number" }], "valueField": "amount" } },',
+    '  "derived": { "total": "sumBy(records, \"drinks\", \"amount\")" },',
+    '  button: { "action": "records.add", "collection": "drinks", "values": { "amount": "{{portion}}" } }',
+    'Every records.add/update/clear must include a literal collection name declared in collections.',
+    'Every List/Table/Gallery/PieChart that reads records also names its collection. Repeat with source=records must name collection too.',
+    'Use Repeat + app-specific cards when that makes the UX better than a generic List. Use Table only for two or three short columns.',
   ],
 
   countdown: [
@@ -133,13 +133,11 @@ const PLAYBOOK: Record<string, string[]> = {
     '  show the frame: { "type": "Image", "source": "photo", "ratio": "square" }',
     '  { "action": "llm.ask", "prompt": "Estimate the calories.", "image": "photo", "fields": {...} }',
     '',
-    'Photos in history. The photo field must go into records together with the rest,',
-    'and be displayed by Gallery or as a List thumbnail — otherwise a file path is',
-    'printed instead of the picture:',
-    '  "records": { "fields": [{ "key": "photo", "label": "Photo", "kind": "image" },',
-    '                          { "key": "kcal", "label": "Kcal", "kind": "number" }], "valueField": "kcal" },',
-    '  { "action": "records.add", "values": { "photo": "{{photo}}", "kcal": "{{kcal}}" } }',
-    '  { "type": "Gallery", "imageKey": "photo", "columns": 3 }',
+    'Photos in history. Put the photo and analysis into one explicitly named collection and display it as an image:',
+    '  "collections": { "meals": { "fields": [{ "key": "photo", "label": "Photo", "kind": "image" },',
+    '                          { "key": "kcal", "label": "Kcal", "kind": "number" }], "valueField": "kcal" } },',
+    '  { "action": "records.add", "collection": "meals", "values": { "photo": "{{photo}}", "kcal": "{{kcal}}" } }',
+    '  { "type": "Gallery", "collection": "meals", "imageKey": "photo", "columns": 3 }',
   ],
 
   image: [
@@ -154,11 +152,11 @@ const PLAYBOOK: Record<string, string[]> = {
 
   charts: [
     'Charts are chosen by the task, not by taste:',
-    '  Chart      — bars over recent entries, values: "recordValues"',
-    '  LineChart  — change over time (weight, steps, temperature)',
-    '  PieChart   — split by category: { "groupBy": "category", "valueKey": "amount" }',
-    '  Calendar   — month grid with marks: { "bind": "selectedDate", "dateKey": "date" }',
-    'All of them read the record history, so they stay empty without a records block.',
+    '  Chart      — bars from an explicit array expression, e.g. valuesBy(records, "weights", "value")',
+    '  LineChart  — change over time from an explicit array expression',
+    '  PieChart   — split a named collection: { "collection": "expenses", "groupBy": "category", "valueKey": "amount" }',
+    '  Calendar   — month grid; when showing record dots include collection + dateKey, while computed marks need no collection.',
+    'Record-backed visualizations stay empty unless the named collection and fields are declared correctly.',
   ],
 
   game: [
@@ -169,7 +167,7 @@ const PLAYBOOK: Record<string, string[]> = {
     'the sandbox has no network. Use the CSS variables --bg, --surface, --text, --accent',
     'so the game matches the app theme. Handle touch, not mouse: touchstart and touchmove.',
     'Bridges available inside (all return promises):',
-    '  toolkin.save({score: 12})        append an entry to the record history',
+    '  toolkin.save({score: 12}, "scores") append an entry to a declared named collection',
     '  toolkin.set("best", 12)          write a state key',
     '  toolkin.get("best")              read a state key or derived value',
     '  toolkin.ask(prompt, fields)      ask the model, spends credits, needs the llm capability',
@@ -242,7 +240,6 @@ export function buildSystemInstruction(locale: string, plan?: PromptPlan): strin
     '  "state": { "key": initialValue },',
     '  "persist": ["state keys that survive closing the app"],',
     '  "derived": { "name": "expression" },',
-    '  "records": { "fields": [...], "valueField": "field" },',
     '  "collections": { "expenses": { "fields": [...], "valueField": "amount" } },',
     '  "components": { "ExpenseCard": { "description": "...", "props": [...], "template": {...} } },',
     '  "screens": { "home": { "type": "Screen", "children": [...] }, "history": {...} },',
@@ -268,6 +265,7 @@ export function buildSystemInstruction(locale: string, plan?: PromptPlan): strin
     '- Each stored record exposes expense, expenseIndex and flattened locals such as expenseId, expenseCreatedAt, expenseCollection AND each domain field from values, e.g. expenseAmount and expenseCategory.',
     '- This flattening exists because dot notation is intentionally unsupported. Use those locals in repeated custom cards and records.update/remove actions.',
     '- Keep repeated custom controls simple and cap Repeat with limit when history can grow.',
+    '- COLLECTION INVARIANT: every collection name used by an action or record-backed component must exist in spec.collections. Never invent names like log/history without declaring their fields.',
     '',
     'ACTIONS (onPress is an array of steps, executed in order):',
     describeActions(),
@@ -312,7 +310,7 @@ export function buildSystemInstruction(locale: string, plan?: PromptPlan): strin
     '6. Mobile UX is enforced: every input/toggle/select/date control has a short label; Select uses 2-12 unique short options; Row with more than 3 children must wrap; Table has at most 3 short columns. Use Grid/Stack/Card instead of dense horizontal UI.',
     '7. Declare only capabilities actually used. Extra permissions are validation failures.',
     '8. Every bind must resolve to a state key (directly or through a custom bind prop). Select initial value must match an option.',
-    '9. Put one-time settings/preferences in persist; put user-created history in records/collections, not ad-hoc state arrays.',
+    '9. Put one-time settings/preferences in persist; put user-created history only in explicitly named collections, not ad-hoc state arrays.',
     '10. Use featureEvidence for EVERY selected feature. Evidence must point to the real screens/components/actions/capabilities that implement it.',
     '11. Never invent unsupported functions/actions/components. If core UX is insufficient, build a safe declarative custom component instead.',
     '12. If a task needs copy/share, add it only when it genuinely helps; do not add decorative features just to fill a screen.',
@@ -337,9 +335,9 @@ export function buildGeneratePrompt(prompt: string, locale: string, plan?: Promp
       `  title: ${plan.title}`,
       `  summary: ${plan.summary}`,
       `  navigation: ${plan.navigation ?? 'single'}`,
-      `  capabilities allowed/required by the selected outcomes: ${plan.capabilities.join(', ') || '(none)'}`,
+      `  known minimum capabilities from planned selected outcomes: ${plan.capabilities.join(', ') || '(none)'}`,
       `  likely core building blocks (hints, NOT a whitelist): ${plan.components.join(', ') || '(none)'}`,
-      `  persistent record history: ${plan.needsRecords ? 'yes' : 'no'}`,
+      `  known planned need for persistent record history: ${plan.needsRecords ? 'yes' : 'no'}`,
       `  structured model answer: ${plan.needsStructuredAi ? 'yes — use llm.ask fields for typed values' : 'no'}`,
     );
     if (plan.screens?.length) {
@@ -365,6 +363,7 @@ export function buildGeneratePrompt(prompt: string, locale: string, plan?: Promp
       '',
       'For each feature id add featureEvidence pointing to concrete implementation. Screen-only evidence is not enough for a behavioral feature.',
       'You may add supporting UX (empty states, navigation, labels, edit/delete controls) when it is necessary to make these features usable. Do not add unrelated product features.',
+      'A feature whose id starts with user-custom- was typed by the person after planning. Treat its words as an exact requirement; infer only the minimum additional collections/capabilities/actions needed to make it work.',
     );
   }
 

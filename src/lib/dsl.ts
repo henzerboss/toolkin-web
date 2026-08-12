@@ -45,13 +45,13 @@ export const COMPONENTS: ComponentDef[] = [
   { type: 'Button', description: 'button; title, variant: primary | secondary, onPress actions; grow=true only inside rows when equal width is desired', required: ['title'] },
   { type: 'Image', description: 'picture from a state field; source is state-key name, ratio', required: ['source'] },
   { type: 'Sandbox', description: 'isolated self-contained HTML/JS for a capability gap such as game/canvas; no network', required: ['html'] },
-  { type: 'Gallery', description: 'photo grid from record history; collection/imageKey/columns' },
+  { type: 'Gallery', description: 'photo grid from a named record collection; collection/imageKey/columns', required: ['collection'] },
   { type: 'LineChart', description: 'line chart; values is an expression returning numbers', required: ['values'] },
-  { type: 'PieChart', description: 'donut chart by record category; collection, groupBy, valueKey', required: ['groupBy'] },
+  { type: 'PieChart', description: 'donut chart by record category; collection, groupBy, valueKey', required: ['collection', 'groupBy'] },
   { type: 'Calendar', description: 'month grid; bind selected timestamp, collection/dateKey record dots, marks computed timestamps', binds: true },
   { type: 'DateField', description: 'date/time picker; bind timestamp ms; mode date | time', binds: true },
-  { type: 'Table', description: 'record table; collection, columns [{key,label}], limit', required: ['columns'] },
-  { type: 'List', description: 'record history; collection, valueKey/imageKey/suffix/limit' },
+  { type: 'Table', description: 'record table; collection, columns [{key,label}], limit', required: ['collection', 'columns'] },
+  { type: 'List', description: 'record history; collection, valueKey/imageKey/suffix/limit', required: ['collection'] },
 ];
 
 export const ACTIONS: ActionDef[] = [
@@ -63,7 +63,7 @@ export const ACTIONS: ActionDef[] = [
   { name: 'records.add', description: 'append record to collection', requires: null, params: ['collection', 'values'] },
   { name: 'records.update', description: 'update record by id', requires: null, params: ['id', 'collection', 'values'] },
   { name: 'records.remove', description: 'delete record by id', requires: null, params: ['id'] },
-  { name: 'records.clear', description: 'clear one collection or all when collection omitted', requires: null, params: ['collection'] },
+  { name: 'records.clear', description: 'clear one explicitly named collection', requires: null, params: ['collection'] },
   { name: 'timer.start', description: 'start countdown; seconds required', requires: null, params: ['seconds'] },
   { name: 'timer.pause', description: 'pause countdown', requires: null, params: [] },
   { name: 'timer.reset', description: 'reset countdown', requires: null, params: [] },
@@ -90,7 +90,7 @@ export const FUNCTION_NAMES = [
 ];
 export const FILTER_NAMES = ['money', 'number', 'integer', 'percent', 'date', 'time', 'duration'];
 export const BUILTIN_SCOPE = [
-  'nowMs', 'llmBusy', 'llmError', 'recordCount', 'recordValues', 'records', 'currentScreen',
+  'nowMs', 'llmBusy', 'llmError', 'recordCount', 'records', 'currentScreen',
   'timerRunning', 'timerElapsed', 'timerRemaining', 'timerFinished',
 ];
 export const UNIVERSAL_PROPS = ['visible', 'testId'];

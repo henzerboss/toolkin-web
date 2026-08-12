@@ -144,7 +144,6 @@ export function autofix(spec: MiniAppSpec): AutofixResult {
     spec: {
       ...spec,
       ...(spec.derived ? { derived } : {}),
-      ...(spec.ui ? { ui: fixNode(spec.ui, applied) } : {}),
       ...(screens ? { screens } : {}),
       ...(components ? { components } : {}),
     },

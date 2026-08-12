@@ -11,7 +11,7 @@
 ```bash
 npm install
 cp .env.example .env        # заполнить DATABASE_URL и TOOLKIN_GEMINI_API_KEY
-npx prisma migrate dev
+npx prisma migrate dev --name init
 npm run dev
 ```
 
@@ -65,8 +65,9 @@ request
 Product Plan и подписанный `planToken`. `/api/generate` проверяет подпись,
 expiration, locale и hash исходного запроса и строит приложение именно из того
 плана, который видел пользователь. Второй вызов planner больше не может
-незаметно поменять feature IDs или информационную архитектуру. Старый клиент без
-token остаётся совместим и использует legacy planning path.
+незаметно поменять feature IDs или информационную архитектуру. `planToken`
+обязателен: этап «Что оно должно уметь?» является обязательным checkpoint и
+генерация не запускается, пока пользователь явно не подтвердит набор функций.
 
 Для production задайте отдельный `TOOLKIN_PLAN_SECRET`. Token не содержит
 секретов, живёт ограниченное время и защищает server-side контракт от подмены.
@@ -93,9 +94,9 @@ acceptance criterion и обязан иметь concrete `featureEvidence`; он
 
 **Validator проверяет исполнимость контракта.** Помимо формы JSON он проверяет
 screen targets, navigation mode, component cycles, props/bind, record schemas,
-collection names, action arguments и capabilities. `collections.default`
-зарезервирована для legacy top-level `records`. Sandbox не получает обходной
-путь к host API: камера, LLM, image generation и notifications требуют тех же
+collection names, action arguments и capabilities. Неявной/default-коллекции
+нет: каждое record-action и каждый record-backed component обязаны ссылаться на
+явно объявленную named collection. Sandbox не получает обходной путь к host API: камера, LLM, image generation и notifications требуют тех же
 capabilities, что обычные actions; внешняя сеть и скрипты запрещены.
 
 **Smoke-test моделирует поведение, а не наличие виджетов.** Он выполняется на
@@ -111,9 +112,10 @@ behavioral checks.
 issues.
 
 Манифест DSL (`src/lib/dsl.ts`) синхронизирован с мобильным
-`src/domain/spec/dsl.ts`; типы Spec v2 синхронизированы аналогично. Новые server
-capabilities нельзя выпускать отдельно от runtime, если старый клиент их не
-понимает, поэтому оба проекта проверяются как один контракт.
+`src/domain/spec/dsl.ts`; типы Spec v2 синхронизированы аналогично. Это первый
+публичный формат приложения: runtime принимает только `schemaVersion: 2`, без
+веток миграции или обратной совместимости. Backend и mobile выпускаются как один
+контракт.
 
 **Модели по задачам.** `TOOLKIN_MODELS_PLAN`, `_GENERATE`, `_REFINE`, `_ASK`,
 `_TRANSLATE` по-прежнему переопределяют общий каскад. Планирование, генерация и

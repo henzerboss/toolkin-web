@@ -46,15 +46,14 @@ export async function POST(req: Request) {
   const locale = /^[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{2,8})?$/.test(localeRaw) ? localeRaw.slice(0, 24) : 'en';
   const { plan, ok } = await planApp(prompt, locale);
 
-  // Планирование не удалось — приложение просто пропустит экран выбора
-  // и соберёт утилиту как раньше. Отказывать здесь незачем.
+  // Product planning is a mandatory checkpoint. Never silently skip it:
+  // otherwise the person reviews one thing and generation builds another.
   if (!ok || plan.features.length === 0) {
-    return json({ available: false, title: '', summary: '', features: [] }, 200, headers);
+    return json({ error: 'plan_failed' }, 503, headers);
   }
 
   return json(
     {
-      available: true,
       planToken: signPlanToken(prompt, locale, plan),
       title: plan.title,
       summary: plan.summary,

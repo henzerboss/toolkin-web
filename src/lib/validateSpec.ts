@@ -9,11 +9,11 @@ const recordSchema=z.object({fields:z.array(z.object({key:z.string().regex(/^[A-
 const customProp=z.object({name:z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),kind:z.enum(['value','text','bind']),required:z.boolean().optional(),default:jsonValue.optional()});
 const customComponent=z.object({description:z.string().max(300).optional(),props:z.array(customProp).max(24).optional(),template:uiNode});
 const specSchema=z.object({
- schemaVersion:z.union([z.literal(1),z.literal(2)]),id:z.string().min(1).max(64),version:z.number().int().positive(),
+ schemaVersion:z.literal(2),id:z.string().min(1).max(64),version:z.number().int().positive(),
  manifest:z.object({name:z.string().min(1).max(40),icon:z.string().min(1),color:z.enum(ACCENT_COLORS),locale:z.string().min(2)}),
  capabilities:z.array(z.enum(CAPABILITIES)).max(CAPABILITIES.length),state:z.record(z.string(),jsonValue),persist:z.array(z.string()).optional(),derived:z.record(z.string(),z.string()).optional(),
- records:recordSchema.optional(),collections:z.record(z.string(),recordSchema).optional(),ui:uiNode.optional(),screens:z.record(z.string(),uiNode).optional(),
- navigation:z.object({start:z.string(),mode:z.enum(['single','stack','tabs']),titles:z.record(z.string(),z.string()).optional(),tabs:z.array(z.object({screen:z.string(),label:z.string(),icon:z.string().optional()})).max(4).optional()}).optional(),
+ collections:z.record(z.string(),recordSchema).optional(),screens:z.record(z.string(),uiNode),
+ navigation:z.object({start:z.string(),mode:z.enum(['single','stack','tabs']),titles:z.record(z.string(),z.string()).optional(),tabs:z.array(z.object({screen:z.string(),label:z.string(),icon:z.string().optional()})).max(4).optional()}),
  components:z.record(z.string(),customComponent).optional(),design:z.object({density:z.enum(['compact','comfortable']).optional(),cardStyle:z.enum(['soft','outlined','flat']).optional(),radius:z.enum(['soft','round']).optional()}).optional(),
  featureEvidence:z.record(z.string(),z.object({screens:z.array(z.string()).optional(),components:z.array(z.string()).optional(),actions:z.array(z.string()).optional(),capabilities:z.array(z.enum(CAPABILITIES)).optional()})).optional(),
 });
@@ -21,7 +21,7 @@ const componentByType=new Map(COMPONENTS.map(c=>[c.type,c]));
 const actionByName=new Map(ACTIONS.map(a=>[a.name,a]));
 const REQUIRED_ACTION_PARAMS:Record<string,string[]>={
  'state.set':['key','value'],'state.inc':['key'],'state.toggle':['key'],'state.random':['key'],
- 'records.add':['values'],'records.update':['id','values'],'records.remove':['id'],'timer.start':['seconds'],'nav.go':['screen'],
+ 'records.add':['collection','values'],'records.update':['id','collection','values'],'records.remove':['id'],'records.clear':['collection'],'timer.start':['seconds'],'nav.go':['screen'],
  'clipboard.set':['value'],'share':['value'],'toast':['text'],'notify.schedule':['title','body','afterSeconds'],'notify.at':['title','at'],
  'camera.capture':['into'],'image.generate':['prompt','into'],'llm.ask':['prompt'],
 };
@@ -35,16 +35,14 @@ export function validateSpec(input:unknown):SpecValidation{
  for(const key of Object.keys(spec.state)){if(!ident.test(key))errors.push(`state.${key}: key must be a valid expression identifier`);if(reserved.has(key))errors.push(`state.${key}: key conflicts with runtime built-in`);}
  for(const key of Object.keys(spec.derived??{})){if(!ident.test(key))errors.push(`derived.${key}: key must be a valid expression identifier`);if(key in spec.state)errors.push(`derived.${key}: conflicts with state key`);if(reserved.has(key))errors.push(`derived.${key}: conflicts with runtime built-in`);}
  if(new Set(spec.capabilities).size!==spec.capabilities.length)errors.push('capabilities: duplicates are not allowed');
- if(!Object.keys(roots).length)errors.push('spec: no ui/screens root is defined');if(Object.keys(roots).length>4)errors.push('screens: maximum 4 generated screens');for(const[name,root]of Object.entries(roots)){if(!/^[a-z][A-Za-z0-9_-]{0,39}$/.test(name))errors.push(`screens.${name}: invalid screen id`);if(spec.schemaVersion===2&&root.type!=='Screen')errors.push(`screens.${name}: v2 screen root must be Screen`);}
- if(spec.schemaVersion===2&&!spec.screens)errors.push('schemaVersion 2: use top-level screens (legacy ui is only for v1 compatibility)');
- if(spec.schemaVersion===2&&spec.ui)errors.push('schemaVersion 2: omit legacy top-level ui');
+ if(!Object.keys(roots).length)errors.push('screens: at least one screen is required');if(Object.keys(roots).length>4)errors.push('screens: maximum 4 generated screens');for(const[name,root]of Object.entries(roots)){if(!/^[a-z][A-Za-z0-9_-]{0,39}$/.test(name))errors.push(`screens.${name}: invalid screen id`);if(root.type!=='Screen')errors.push(`screens.${name}: screen root must be Screen`);}
  if(Object.keys(spec.state).length>80)errors.push('state: maximum 80 keys');if(Object.keys(spec.derived??{}).length>80)errors.push('derived: maximum 80 expressions');if((spec.persist??[]).length>80)errors.push('persist: maximum 80 keys');
  if(!checkComplexity(spec,errors))return{ok:false,errors};
  for(const [key,expression]of Object.entries(spec.derived??{})){try{evaluator.compile(expression);}catch(error){errors.push(`derived.${key}: ${error instanceof ExpressionError?error.message:String(error)}`);}}
  for(const key of spec.persist??[])if(!(key in spec.state))errors.push(`persist: field "${key}" is not in state`);
  checkRecordSchemas(spec,errors);checkNavigation(spec,roots,errors);checkCustomDefinitions(spec,errors,evaluator);
  for(const [name,root]of Object.entries(roots))checkNode(root,spec,errors,evaluator,`screens.${name}`,new Set(),[]);
- if(spec.schemaVersion===2)checkUxV2(spec,errors);checkWiring(spec,errors);if(errors.length>60)errors.length=60;return errors.length?{ok:false,errors}:{ok:true,spec};
+ checkUxV2(spec,errors);checkWiring(spec,errors);if(errors.length>60)errors.length=60;return errors.length?{ok:false,errors}:{ok:true,spec};
 }
 function checkComplexity(spec:MiniAppSpec,errors:string[]):boolean{
  const roots=[...Object.entries(getScreenRoots(spec)).map(([name,node])=>({node,path:`screens.${name}`,depth:1})),...Object.entries(spec.components??{}).map(([name,def])=>({node:def.template,path:`components.${name}.template`,depth:1}))];
@@ -54,9 +52,8 @@ function checkComplexity(spec:MiniAppSpec,errors:string[]):boolean{
  return nodes<=240&&actions<=160&&maxDepth<=24;
 }
 function checkRecordSchemas(spec:MiniAppSpec,errors:string[]):void{
- const schemas={...(spec.records?{default:spec.records}:{}),...(spec.collections??{})};if(Object.keys(schemas).length>12)errors.push('collections: maximum 12 collections');
-    if(spec.collections?.default)errors.push('collections.default is reserved; use top-level records for the default collection');
- for(const [name,schema]of Object.entries(schemas)){if(name!=='default'&&!/^[a-z][A-Za-z0-9_-]{0,39}$/.test(name))errors.push(`collection ${name}: invalid collection id`);const keys=new Set<string>();for(const field of schema.fields){if(keys.has(field.key))errors.push(`collection ${name}: duplicate field "${field.key}"`);keys.add(field.key);}if(schema.valueField&&!keys.has(schema.valueField))errors.push(`collection ${name}: valueField "${schema.valueField}" is not a field`);}
+ const schemas=spec.collections??{};if(Object.keys(schemas).length>12)errors.push('collections: maximum 12 collections');
+ for(const [name,schema]of Object.entries(schemas)){if(!/^[a-z][A-Za-z0-9_-]{0,39}$/.test(name))errors.push(`collection ${name}: invalid collection id`);const keys=new Set<string>();for(const field of schema.fields){if(keys.has(field.key))errors.push(`collection ${name}: duplicate field "${field.key}"`);keys.add(field.key);}if(schema.valueField&&!keys.has(schema.valueField))errors.push(`collection ${name}: valueField "${schema.valueField}" is not a field`);}
 }
 function checkNavigation(spec:MiniAppSpec,roots:Record<string,UiNode>,errors:string[]):void{
  const nav=spec.navigation;if(!nav){if(Object.keys(roots).length>1)errors.push('navigation: required when more than one screen exists');return;}if(!roots[nav.start])errors.push(`navigation.start: screen "${nav.start}" does not exist`);if(nav.mode==='single'&&Object.keys(roots).length!==1)errors.push('navigation: single mode requires exactly one screen');
@@ -77,6 +74,9 @@ function checkNode(node:UiNode,spec:MiniAppSpec,errors:string[],evaluator:Expres
  checkNodeExpressionsAndTemplates(node,evaluator,errors,path);
  if(node.type==='Select'&&Array.isArray(node.options)&&typeof node.bind==='string'&&!node.bind.includes('{{')){const values=(node.options as {value?:unknown}[]).map(x=>x?.value);if(!values.includes(spec.state[node.bind]))errors.push(`${path} (Select): initial state.${node.bind} matches none of options.value`);}
  if(node.type==='Repeat'&&typeof node.source!=='string')errors.push(`${path} (Repeat): source expression is required`);
+ if(['List','Table','Gallery','PieChart'].includes(node.type)){const collection=typeof node.collection==='string'?node.collection:'';if(!collection)errors.push(`${path} (${node.type}): collection is required`);else if(!getCollectionSchema(spec,collection))errors.push(`${path} (${node.type}): collection "${collection}" is not declared`);}
+ if(node.type==='Calendar'&&typeof node.collection==='string'&&node.collection!==''&&!getCollectionSchema(spec,node.collection))errors.push(`${path} (Calendar): collection "${node.collection}" is not declared`);
+ if(node.type==='Repeat'&&node.source==='records'){const collection=typeof node.collection==='string'?node.collection:'';if(!collection)errors.push(`${path} (Repeat): source=records requires collection`);else if(!getCollectionSchema(spec,collection))errors.push(`${path} (Repeat): collection "${collection}" is not declared`); }
  if(Array.isArray(node.children))node.children.forEach((child,index)=>checkNode(child,spec,errors,evaluator,`${path}.children[${index}]`,localProps,customStack));
 }
 function checkCorePropTypes(node:UiNode,errors:string[],path:string):void{
@@ -117,7 +117,7 @@ function checkStep(step:Step,spec:MiniAppSpec,errors:string[],evaluator:Expressi
  for(const [key,raw]of Object.entries(step)){if(key==='action'||key==='when'||typeof raw!=='string'||!raw.includes('{{'))continue;checkTemplateString(raw,evaluator,errors,`${path}.${key}`);}
  if(name.startsWith('state.')&&name!=='state.reset'&&typeof step.key==='string'){const dynamic=step.key.match(/^\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}$/)?.[1];if(!dynamic&&!(step.key in spec.state))errors.push(`${path}: state key "${step.key}" does not exist`);if(dynamic&&!localProps.has(dynamic))errors.push(`${path}: dynamic state key uses unknown local prop "${dynamic}"`);}
  if(name==='nav.go'&&typeof step.screen==='string'&&!step.screen.includes('{{')&&!getScreenRoots(spec)[step.screen])errors.push(`${path}: nav.go target "${step.screen}" does not exist`);
- const collection=typeof step.collection==='string'&&!step.collection.includes('{{')?step.collection:'default';if(name.startsWith('records.')&&name!=='records.remove'&&!getCollectionSchema(spec,collection))errors.push(`${path}: records action targets undeclared collection "${collection}"`);
+ const collection=typeof step.collection==='string'&&!step.collection.includes('{{')?step.collection:'';if((name==='records.add'||name==='records.update'||name==='records.clear')){if(!collection)errors.push(`${path}: ${name} requires a literal collection name`);else if(!getCollectionSchema(spec,collection))errors.push(`${path}: records action targets undeclared collection "${collection}"`);}
  if((name==='records.add'||name==='records.update')&&step.values&&typeof step.values==='object'){const schema=getCollectionSchema(spec,collection);if(schema){const fields=new Set(schema.fields.map(x=>x.key));for(const [key,raw]of Object.entries(step.values as Record<string,unknown>)){if(!fields.has(key))errors.push(`${path}: record field "${key}" is not declared in collection "${collection}"`);if(typeof raw==='string'&&raw.includes('{{'))checkTemplateString(raw,evaluator,errors,`${path}.values.${key}`);}}}
 }
 const PLACEHOLDER=/\{\{([^}]+)\}\}/g;
@@ -132,7 +132,7 @@ function collectUsed(spec:MiniAppSpec):{steps:Step[];nodes:UiNode[];serialized:s
 }
 function checkWiring(spec:MiniAppSpec,errors:string[]):void{
  const {steps,nodes,serialized}=collectUsed(spec);const named=(name:string)=>steps.filter(s=>s.action===name);const usesPrefix=(prefix:string)=>steps.some(s=>String(s.action??'').startsWith(prefix));
- if(usesPrefix('records.')&&!spec.records&&!Object.keys(spec.collections??{}).length)errors.push('records: record actions are used but no records/collections schema exists');
+ if(usesPrefix('records.')&&!Object.keys(spec.collections??{}).length)errors.push('records: record actions are used but no named collection schema exists');
  for(const step of named('timer.start'))if(step.seconds===undefined)errors.push('timer.start: seconds is missing');if(usesPrefix('timer.')&&!/timerRemaining|timerElapsed|timerRunning|timerFinished/.test(serialized))errors.push('timer: timer actions are used but no UI shows timer state');
  if(/\brandom\s*\(/.test(serialized+JSON.stringify(spec.derived??{})))errors.push('expressions: random() does not exist; use state.random or Sandbox for game randomness');checkAiWiring(spec,steps,serialized,errors);checkSandbox(spec,nodes,errors);
 }
@@ -148,5 +148,5 @@ function checkAiWiring(spec:MiniAppSpec,steps:Step[],serialized:string,errors:st
  for(const step of captures){const into=typeof step.into==='string'?step.into:'';if(!into)errors.push('camera.capture: into is missing');else if(!(into in spec.state))errors.push(`camera.capture: into="${into}" is not declared in state`);}
  if((asks.length||images.length)&&!/llmBusy/.test(serialized))errors.push('AI/image action: use llmBusy to disable paid action buttons and prevent double charges');
  const photoKeys=captures.map(s=>typeof s.into==='string'?s.into:'').filter(Boolean);for(const photoKey of photoKeys){const saved=steps.some(step=>step.action==='records.add'&&step.values&&typeof step.values==='object'&&Object.values(step.values as Record<string,unknown>).some(v=>typeof v==='string'&&v.includes(photoKey)));if(!saved)continue;const galleryShows=serialized.includes('"type":"Gallery"')&&(photoKey==='photo'||serialized.includes(`"imageKey":"${photoKey}"`));const listShows=serialized.includes(`"imageKey":"${photoKey}"`);if(!galleryShows&&!listShows)errors.push(`records: captured photo "${photoKey}" is saved but history never displays it; use Gallery or imageKey`);}
- for(const step of steps){if(step.action!=='records.add'||!step.values||typeof step.values!=='object')continue;const collection=typeof step.collection==='string'?step.collection:'default';const schema=getCollectionSchema(spec,collection);for(const [key,raw]of Object.entries(step.values as Record<string,unknown>)){if(schema?.fields.find(x=>x.key===key)?.kind!=='number'||typeof raw!=='string')continue;const source=raw.replace(/[{}\s]/g,'');if(asks.some(ask=>ask.into===source&&!ask.fields))errors.push(`records.add: numeric field "${key}" receives free-text llm.ask output; use structured fields`);}}
+ for(const step of steps){if(step.action!=='records.add'||!step.values||typeof step.values!=='object')continue;const collection=typeof step.collection==='string'?step.collection:'';const schema=collection?getCollectionSchema(spec,collection):undefined;for(const [key,raw]of Object.entries(step.values as Record<string,unknown>)){if(schema?.fields.find(x=>x.key===key)?.kind!=='number'||typeof raw!=='string')continue;const source=raw.replace(/[{}\s]/g,'');if(asks.some(ask=>ask.into===source&&!ask.fields))errors.push(`records.add: numeric field "${key}" receives free-text llm.ask output; use structured fields`);}}
 }

@@ -58,13 +58,14 @@ export async function POST(req: Request) {
         .slice(0, 5)
     : undefined;
 
-  const planToken = typeof body.planToken === 'string' ? body.planToken.slice(0, 20000) : undefined;
-  const result = await generateFromRequest(prompt, locale, features, customFeatures, planToken);
+  const planToken = typeof body.planToken === 'string' ? body.planToken.slice(0, 20000) : '';
+  if (!planToken) return json({ error: 'plan_required' }, 409, headers);
+  const result = await generateFromRequest(prompt, locale, features ?? [], customFeatures ?? [], planToken);
 
   if (!result.ok) {
     return json(
       { error: result.error, errors: result.errors, attempts: result.attempts },
-      result.error === 'validation_failed' || result.error === 'feature_incomplete' ? 422 : result.error === 'plan_invalid' ? 409 : 503,
+      result.error === 'validation_failed' || result.error === 'feature_incomplete' ? 422 : result.error === 'plan_invalid' || result.error === 'plan_required' ? 409 : 503,
       headers,
     );
   }
