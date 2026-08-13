@@ -54,7 +54,8 @@ request
   → POST /generate → durable PostgreSQL GenerationJob → 202 jobId
   → background UX/AppSpec v2 generation
   → deterministic normalize/autofix → validateSpec → behavioral smokeTest
-  → checkFeatures(featureEvidence + exact requirements)
+  → reachable implementation graph → strict minimum checks
+  → independent acceptance-criteria audit → backend-generated featureEvidence
   → up to two semantic repair rounds after deterministic compiler fixes
   → credits charge only after success
   → client polls /generate/status and receives result
@@ -73,11 +74,12 @@ expiration, locale и hash исходного запроса и строит п�
 Cache key включает fingerprint фактически согласованного плана и выбранных
 фичей, поэтому спека от другого плана не может попасть в ответ из кэша.
 
-**Planner resilient path.** JSON-планирование и AppSpec используют Gemini
-Interactions API с `response_format`/JSON Schema. Уровни thinking для этого API —
-`minimal/low/medium/high`. Если structured planning временно недоступен,
-`/api/plan` пробует JSON-only fallback, а затем возвращает консервативный
-локальный Product Plan. Raw provider error в клиент не показывается.
+**Planner resilient path.** Product Plan теперь идёт через JSON-object mode как
+основной путь и наш строгий `normalizePlanCandidate`; это убирает стабильные 400,
+которые provider-side nested schema давала на части аккаунтов/моделей. Structured
+planning оставлен только вторым fallback, а затем используется консервативный
+локальный Product Plan. AppSpec и feature auditor по-прежнему используют
+Interactions API; raw provider error в клиент не показывается.
 
 **Generation job вместо длинного HTTP-запроса.** `/api/generate` больше не ждёт
 Gemini и repair-loop. Он за миллисекунды создаёт `GenerationJob` в Postgres и
@@ -95,16 +97,20 @@ job, чтобы двойной tap не удваивал расходы на м�
 React Native не генерируется.
 
 Spec v2 поддерживает `single`/`stack`/`tabs`, named collections, `Repeat`,
-app-local declarative composite components, design tokens и `featureEvidence`.
+app-local declarative composite components, design tokens и server-generated `featureEvidence`.
 Это снимает старый потолок «один экран из 4–8 блоков»: специфичные элементы вроде
 `ExpenseCard`, `WorkoutSetRow` или `HabitWeekCell` собираются из безопасных core
 primitives внутри самой спеки и проходят ту же валидацию.
 
 **Custom feature — полноценное обещание.** Пользовательский пункт получает
-acceptance criterion и обязан иметь concrete `featureEvidence`; он больше не
-исключается из проверки. `checkFeatures` не считает `DateField` календарём,
-`ProgressRing` графиком или `image.generate` эквивалентом `llm.ask`: evidence
-должен ссылаться на реально существующие components/actions/capabilities.
+acceptance criterion и проходит ту же проверку, что planner-feature. Builder больше
+не может «доказать» функцию, просто написав красивый `featureEvidence`: backend
+строит reachable graph от `navigation.start`, разворачивает только реально
+использованные composite components, проверяет точные planner minimums, а затем
+отдельный дешёвый auditor трассирует acceptance criteria по UI/actions/state/derived/
+collections. Только после успешного аудита backend сам записывает `featureEvidence`
+из существующих экранов/components/actions/capabilities. Неиспользованное определение
+компонента или orphan-screen доказательством не считается.
 
 **Validator проверяет исполнимость контракта.** Помимо формы JSON он проверяет
 screen targets, navigation mode, component cycles, props/bind, record schemas,
@@ -132,7 +138,7 @@ capabilities нельзя выпускать отдельно от runtime, ес
 понимает, поэтому оба проекта проверяются как один контракт.
 
 **Модели по задачам.** `TOOLKIN_MODELS_PLAN`, `_GENERATE`, `_REFINE`, `_ASK`,
-`_TRANSLATE` по-прежнему переопределяют общий каскад. Планирование, генерация и
+`_VERIFY`, `_TRANSLATE` по-прежнему переопределяют общий каскад. Планирование, генерация и
 runtime-ответы имеют разные требования к latency/quality, поэтому разделение
 сохраняется.
 

@@ -1,9 +1,10 @@
 import { THINKING, callGemini, safeJsonParse, type Purpose, type ThinkingLevel } from './_shared';
-import { buildGeneratePrompt, buildRepairPrompt, buildSystemInstruction } from './_prompt';
+import { buildGeneratePrompt, buildRecoveryPrompt, buildRepairPrompt, buildSystemInstruction } from './_prompt';
 import { planForFeatures, type Plan, type Feature } from './_plan';
 import { verifyPlanToken } from '@/lib/planToken';
 import { createHash } from 'node:crypto';
-import { checkFeatures } from '@/lib/featureCheck';
+import { checkFeatures, checkStoredFeatureEvidence } from '@/lib/featureCheck';
+import { auditFeatureImplementation } from './_featureVerifier';
 import { readCache, writeCache } from '@/lib/specCache';
 import { autofix } from '@/lib/autofix';
 import { normalizeGeneratedSpec } from '@/lib/normalizeGeneratedSpec';
@@ -79,6 +80,16 @@ async function reportProgress(callback: GenerationProgress | undefined, stage: G
   try { await callback(stage); } catch (error) { console.warn('[toolkin.generate.progress]', error); }
 }
 
+function repairPromptForRound(originalPrompt: string, spec: unknown, errors: string[], round: number): string {
+  const raw = typeof spec === 'string' ? spec : JSON.stringify(spec);
+  // round 0 failure -> targeted repair; round 1 failure -> final semantic rebuild
+  // when MAX_REPAIRS=2. For other configured values the final available round
+  // still gets the recovery prompt.
+  return MAX_REPAIRS > 0 && round + 1 >= MAX_REPAIRS
+    ? buildRecoveryPrompt(originalPrompt, raw, errors)
+    : buildRepairPrompt(raw, errors);
+}
+
 /**
  * Модель ошибается в спеке примерно в каждом пятом ответе, и почти всегда
  * это мелочь: несуществующий компонент, bind мимо state, забытая capability.
@@ -102,7 +113,7 @@ export async function generateSpec(
    * Best mechanically valid candidate is kept only as repair/failure context.
    * A reviewed Product Plan is a contract: a partial app is never charged or shipped.
    */
-  let best: { spec: MiniAppSpec; check: ReturnType<typeof checkFeatures> } | null = null;
+  let best: { spec: MiniAppSpec; issues: string[]; implemented: string[]; missing: { id: string; title: string }[] } | null = null;
 
   for (let round = 0; round <= MAX_REPAIRS; round++) {
     attempts += 1;
@@ -145,26 +156,71 @@ export async function generateSpec(
       const smoke = smokeTest(fixed.spec);
       if (!smoke.ok) {
         lastErrors = smoke.issues;
-        prompt = buildRepairPrompt(JSON.stringify(fixed.spec), smoke.issues);
+        prompt = repairPromptForRound(initialPrompt, fixed.spec, smoke.issues, round);
         continue;
       }
 
-      // Обещанные фичи проверяются последними: сначала утилита должна
-      // работать, потом делать то, на что человек согласился галочками.
-      const featureCheck = checkFeatures(fixed.spec, plan?.features ?? []);
-
-      if (!featureCheck.ok) {
-        // Запоминаем самый полный вариант только как контекст для следующей
-        // починки. Если попытки закончатся, partial app не отдаётся и не
-        // оплачивается — Product Plan остаётся контрактом.
-        if (!best || featureCheck.implemented.length > best.check.implemented.length) {
-          best = { spec: fixed.spec, check: featureCheck };
+      // Product Plan is a real contract. First enforce exact mechanical
+      // minimums on the reachable UI graph, then independently audit every
+      // acceptance criterion. Builder-authored featureEvidence is metadata only;
+      // it is never trusted as proof and is overwritten after a successful audit.
+      const mechanical = checkFeatures(fixed.spec, plan?.features ?? []);
+      if (!mechanical.ok) {
+        if (!best || mechanical.implemented.length > best.implemented.length) {
+          best = { spec: fixed.spec, issues: mechanical.issues, implemented: mechanical.implemented, missing: mechanical.missing };
         }
-        lastErrors = featureCheck.issues;
-        prompt = buildRepairPrompt(JSON.stringify(fixed.spec), featureCheck.issues);
+        lastErrors = mechanical.issues;
+        prompt = repairPromptForRound(initialPrompt, fixed.spec, mechanical.issues, round);
         continue;
       }
 
+      const audit = await auditFeatureImplementation(fixed.spec, plan?.features ?? [], mechanical.inventory);
+      if (audit.usage) {
+        usage.input += audit.usage.input;
+        usage.output += audit.usage.output;
+        usage.thoughts += audit.usage.thoughts;
+      }
+
+      if (!audit.ok) {
+        // If the lightweight auditor itself is temporarily unavailable, a spec
+        // with previously valid reachable evidence may still proceed. Fresh apps
+        // normally take the semantic path; this fallback prevents an audit-model
+        // outage from throwing away a mechanically sound generation.
+        if (audit.unavailable) {
+          const fallback = checkStoredFeatureEvidence(fixed.spec, plan?.features ?? []);
+          if (fallback.ok) {
+            fixed.spec.featureEvidence = fallback.evidence;
+            await reportProgress(onProgress, 'finalizing');
+            return {
+              ok: true,
+              spec: fixed.spec,
+              attempts,
+              usage,
+              autofixed: [...normalized.applied, ...fixed.applied],
+              features: fallback.implemented,
+              missingFeatures: [],
+            };
+          }
+          // A provider outage cannot be repaired by asking the builder to mutate
+          // a valid app. Fail without charging; the async job can be retried later.
+          return {
+            ok: false,
+            attempts,
+            usage,
+            error: 'model_unavailable',
+            errors: ['Feature verification service is temporarily unavailable'],
+          };
+        }
+
+        if (!best || audit.implemented.length > best.implemented.length) {
+          best = { spec: fixed.spec, issues: audit.issues, implemented: audit.implemented, missing: audit.missing };
+        }
+        lastErrors = audit.issues;
+        prompt = repairPromptForRound(initialPrompt, fixed.spec, audit.issues, round);
+        continue;
+      }
+
+      fixed.spec.featureEvidence = audit.evidence;
       await reportProgress(onProgress, 'finalizing');
       return {
         ok: true,
@@ -172,13 +228,13 @@ export async function generateSpec(
         attempts,
         usage,
         autofixed: [...normalized.applied, ...fixed.applied],
-        features: featureCheck.implemented,
+        features: audit.implemented,
         missingFeatures: [],
       };
     }
 
     lastErrors = validation.errors;
-    prompt = buildRepairPrompt(JSON.stringify(preFixed.spec), lastErrors);
+    prompt = repairPromptForRound(initialPrompt, preFixed.spec, lastErrors, round);
   }
 
   // A reviewed feature selection is a contract. Returning a partially implemented
@@ -189,10 +245,10 @@ export async function generateSpec(
       ok: false,
       attempts,
       usage,
-      errors: best.check.issues.length ? best.check.issues : lastErrors,
+      errors: best.issues.length ? best.issues : lastErrors,
       error: 'feature_incomplete',
-      features: best.check.implemented,
-      missingFeatures: best.check.missing,
+      features: best.implemented,
+      missingFeatures: best.missing,
     };
   }
 
@@ -250,11 +306,12 @@ export async function generateFromRequest(
     if (validated.ok) {
       const fixed = { spec: validated.spec, applied: preFixed.applied };
       const smoke = smokeTest(fixed.spec);
-      const checked = smoke.ok ? checkFeatures(fixed.spec, plan.features) : null;
+      const checked = smoke.ok ? checkStoredFeatureEvidence(fixed.spec, plan.features) : null;
       if (checked?.ok) {
+        fixed.spec.featureEvidence = checked.evidence;
         await reportProgress(onProgress, 'finalizing');
         return {
-        ok: true, spec: fixed.spec, attempts: 0, cached: true, plan,
+          ok: true, spec: fixed.spec, attempts: 0, cached: true, plan,
           autofixed: [...normalized.applied, ...fixed.applied], features: checked.implemented, missingFeatures: [],
         };
       }

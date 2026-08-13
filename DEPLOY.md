@@ -289,6 +289,9 @@ pm2 restart toolkin --update-env
 
 ```env
 TOOLKIN_THINKING_GENERATE=medium
+TOOLKIN_THINKING_VERIFY=low
+TOOLKIN_MODELS_VERIFY=gemini-3.5-flash-lite,gemini-3.5-flash
+TOOLKIN_MAX_OUTPUT_TOKENS_VERIFY=4096
 TOOLKIN_MAX_REPAIRS=2
 TOOLKIN_ATTEMPTS_PER_MODEL=1
 TOOLKIN_MAX_MODELS_PER_CALL=2
@@ -326,10 +329,11 @@ curl -s -H "X-Client-Token: $TOOLKIN_CLIENT_TOKEN" https://toolkin.app/api/healt
 ```
 
 Роут получает список доступных моделей и делает **один** маленький настоящий
-planner probe через тот же Gemini Interactions transport, который используется
-для structured JSON. Он не генерирует тестовые приложения и не пингует каждую
+planner probe через тот же Gemini Interactions JSON-object transport, который используется
+основным Product Plan path. Он не генерирует тестовые приложения и не пингует каждую
 модель отдельным платным запросом. Перед переключением трафика должны быть
 `aiJsonTransport: "interactions"`, `generationTransport: "durable-job-polling"`,
+`featureVerification: "reachable-graph+semantic-audit"`, `plannerMode: "interactions-json-primary"`,
 `generationJobsReady: true`, `planWorking: true`, `plannerProbe.ok: true` и
 `productionConfigOk: true`. `working`/`suggestions` показывают, какие модели
 видит именно ваш ключ. `productionConfigOk` в production подтверждает наличие

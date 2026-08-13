@@ -23,8 +23,8 @@ export async function OPTIONS(req: Request) {
 }
 
 /**
- * Production diagnostics. The only live paid probe is one tiny structured JSON
- * request through the SAME callGemini transport used by the product. We do not
+ * Production diagnostics. The only live paid probe is one tiny JSON-object
+ * request through the SAME planner transport used by the product. We do not
  * ping every model or generate a real image from a health endpoint.
  */
 export async function GET(req: Request) {
@@ -63,6 +63,8 @@ export async function GET(req: Request) {
       pipelineVersion: PIPELINE_VERSION,
       aiJsonTransport: 'interactions',
       generationTransport: 'durable-job-polling',
+      featureVerification: 'reachable-graph+semantic-audit',
+      plannerMode: 'interactions-json-primary',
       generationJobsReady,
       generationJobsError,
       configured: CONFIGURED_MODELS,
@@ -135,12 +137,6 @@ async function probePlanner(): Promise<ProbeState['planner']> {
       jsonOnly: true,
       thinking: 'minimal',
       purpose: 'plan',
-      responseSchema: {
-        type: 'OBJECT',
-        properties: { ok: { type: 'BOOLEAN' } },
-        required: ['ok'],
-        additionalProperties: false,
-      },
     },
   );
 
@@ -160,7 +156,7 @@ async function probePlanner(): Promise<ProbeState['planner']> {
     model: result.model ?? MODELS_BY_PURPOSE.plan[0] ?? 'unknown',
     ok: parsedOk,
     status: parsedOk ? 200 : 502,
-    error: parsedOk ? undefined : 'structured_output_invalid',
+    error: parsedOk ? undefined : 'planner_json_invalid',
     transport: result.transport,
   };
 }

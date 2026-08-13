@@ -365,12 +365,34 @@ export function planForFeatures(plan: Plan, selectedIds: string[]): Plan {
 }
 
 export async function planApp(request: string, locale: string): Promise<PlanResult> {
-  const system = `${PLAN_SYSTEM}\n\nUser language/locale: ${locale}.`;
+  const system = `${PLAN_SYSTEM}
+
+User language/locale: ${locale}.`;
   const user = `User request: ${JSON.stringify(request.slice(0, 800))}`;
   let diagnostic = '';
 
-  // Attempt 1: current Gemini structured output. This is the highest-quality and
-  // most deterministic path when the provider accepts the schema.
+  // Production primary path: JSON object mode plus our own strict normalizer.
+  // Provider-side nested planner schemas have repeatedly produced 400 responses
+  // while the exact same models return good JSON objects. The Product Plan is
+  // small, so a concise explicit contract + normalizePlanCandidate is both faster
+  // and more robust than spending a request on a schema the provider may reject.
+  const jsonPrimary = await callGemini(`${system}${JSON_CONTRACT}`, user, {
+    jsonOnly: true,
+    thinking: THINKING.plan,
+    purpose: 'plan',
+  });
+  if (jsonPrimary.ok) {
+    const parsed = safeJsonParse<unknown>(jsonPrimary.text ?? '', null);
+    const plan = normalizePlanCandidate(parsed);
+    if (plan) return { ok: true, plan, mode: 'json' };
+    diagnostic = 'json_response_invalid';
+  } else {
+    diagnostic = jsonPrimary.error ?? 'json_request_failed';
+  }
+
+  // Secondary path: enforced structured output. It is useful when a model emits
+  // a malformed object in JSON mode, but it is deliberately not the first paid
+  // request because provider schema regressions must not slow every user down.
   const structured = await callGemini(system, user, {
     jsonOnly: true,
     thinking: THINKING.plan,
@@ -380,35 +402,18 @@ export async function planApp(request: string, locale: string): Promise<PlanResu
   if (structured.ok) {
     const parsed = safeJsonParse<unknown>(structured.text ?? '', null);
     const plan = normalizePlanCandidate(parsed);
-    if (plan) return { ok: true, plan, mode: 'structured' };
-    diagnostic = 'structured_response_invalid';
-  } else {
-    diagnostic = structured.error ?? 'structured_request_failed';
-  }
-
-  // Attempt 2: provider-independent JSON mode. This protects the entire feature
-  // review flow from a response-schema regression without weakening our own
-  // normalizer or signed-plan contract.
-  const jsonFallback = await callGemini(`${system}${JSON_CONTRACT}`, user, {
-    jsonOnly: true,
-    thinking: THINKING.plan,
-    purpose: 'plan',
-  });
-  if (jsonFallback.ok) {
-    const parsed = safeJsonParse<unknown>(jsonFallback.text ?? '', null);
-    const plan = normalizePlanCandidate(parsed);
     if (plan) {
-      console.warn('[toolkin.plan] structured planner failed; JSON fallback succeeded');
-      return { ok: true, plan, mode: 'json', diagnostic };
+      console.warn('[toolkin.plan] JSON planner failed; structured fallback succeeded');
+      return { ok: true, plan, mode: 'structured', diagnostic };
     }
-    diagnostic = `${diagnostic}; json_response_invalid`;
+    diagnostic = `${diagnostic}; structured_response_invalid`;
   } else {
-    diagnostic = `${diagnostic}; ${jsonFallback.error ?? 'json_request_failed'}`;
+    diagnostic = `${diagnostic}; ${structured.error ?? 'structured_request_failed'}`;
   }
 
-  // Attempt 3: never make the mandatory review screen a dead end just because
-  // model output formatting or a temporary provider outage failed twice. This
-  // plan intentionally promises only the user's core request and no capabilities.
+  // Never make the mandatory feature-review screen a dead end because provider
+  // output formatting failed twice. The local plan is intentionally conservative;
+  // the normal generation/audit pipeline still enforces the reviewed feature.
   console.error('[toolkin.plan] AI planning unavailable; using conservative local plan:', diagnostic.slice(0, 800));
   return { ok: true, plan: createLocalPlan(request), mode: 'local', diagnostic };
 }

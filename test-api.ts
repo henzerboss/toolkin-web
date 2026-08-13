@@ -3,7 +3,7 @@ import { validateSpec } from './src/lib/validateSpec';
 import { autofix } from './src/lib/autofix';
 import { normalizeGeneratedSpec } from './src/lib/normalizeGeneratedSpec';
 import { smokeTest } from './src/lib/smokeTest';
-import { checkFeatures } from './src/lib/featureCheck';
+import { analyzeImplementation, checkFeatures, checkStoredFeatureEvidence } from './src/lib/featureCheck';
 import type { Feature, Plan } from './src/app/api/_plan';
 import { createLocalPlan, normalizePlanCandidate, planForFeatures } from './src/app/api/_plan';
 import { toGeminiRestThinkingLevel, toResponseJsonSchema } from './src/app/api/_shared';
@@ -340,6 +340,28 @@ const complete: MiniAppSpec = {
   },
 };
 assert.ok(checkFeatures(complete, promised).ok);
+assert.ok(checkStoredFeatureEvidence(complete, promised).ok);
+
+// Builder-authored evidence is not a contract anymore. If it goes stale after a
+// repair, strict reachable requirements still pass and the semantic auditor will
+// regenerate evidence from the actual app instead of rejecting a working flow.
+const staleEvidence = JSON.parse(JSON.stringify(complete));
+staleEvidence.featureEvidence.predict = { components: ['GhostCalendar'], actions: ['fly'] };
+assert.ok(checkFeatures(staleEvidence, promised).ok);
+assert.ok(!checkStoredFeatureEvidence(staleEvidence, promised).ok);
+
+// Reachability matters: unused custom definitions and orphan screens must not
+// satisfy a feature. Instantiated custom components are expanded so actions in
+// their templates count on the calling screen.
+const reachableComposite = JSON.parse(JSON.stringify(expenses));
+reachableComposite.components.UnusedCamera = { template: { type: 'Button', title: 'Ghost', onPress: [{ action: 'camera.capture', into: 'photo', source: 'camera' }] } };
+reachableComposite.capabilities = ['camera'];
+const reachableInventory = analyzeImplementation(reachableComposite);
+assert.ok(reachableInventory.components.has('ExpenseCard'));
+assert.ok(reachableInventory.actions.has('records.remove'));
+assert.ok(!reachableInventory.components.has('UnusedCamera'));
+assert.ok(!reachableInventory.actions.has('camera.capture'));
+
 const noReminder = JSON.parse(JSON.stringify(complete));
 noReminder.screens.home.children.pop(); noReminder.capabilities = [];
 assert.ok(!checkFeatures(noReminder, promised).ok);

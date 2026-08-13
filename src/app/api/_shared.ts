@@ -21,6 +21,7 @@ export const MODELS_BY_PURPOSE = {
   generate: purposeModels(process.env.TOOLKIN_MODELS_GENERATE, DEFAULT_MODEL_CASCADE),
   refine: purposeModels(process.env.TOOLKIN_MODELS_REFINE, DEFAULT_MODEL_CASCADE),
   ask: purposeModels(process.env.TOOLKIN_MODELS_ASK, 'gemini-3.5-flash-lite'),
+  verify: purposeModels(process.env.TOOLKIN_MODELS_VERIFY, 'gemini-3.5-flash-lite,gemini-3.5-flash'),
   translate: purposeModels(process.env.TOOLKIN_MODELS_TRANSLATE, 'gemini-3.5-flash-lite'),
 } as const;
 
@@ -41,6 +42,7 @@ const OUTPUT_LIMITS: Record<Purpose, number> = {
   generate: parsePositiveInt(process.env.TOOLKIN_MAX_OUTPUT_TOKENS_GENERATE, 32768, 2048, 65536),
   refine: parsePositiveInt(process.env.TOOLKIN_MAX_OUTPUT_TOKENS_REFINE, 32768, 2048, 65536),
   ask: parsePositiveInt(process.env.TOOLKIN_MAX_OUTPUT_TOKENS_ASK, 4096, 256, 65536),
+  verify: parsePositiveInt(process.env.TOOLKIN_MAX_OUTPUT_TOKENS_VERIFY, 4096, 512, 65536),
   translate: parsePositiveInt(process.env.TOOLKIN_MAX_OUTPUT_TOKENS_TRANSLATE, 2048, 128, 65536),
 };
 
@@ -57,6 +59,7 @@ export const THINKING: Record<Purpose, ThinkingLevel> = {
   generate: parseThinking(process.env.TOOLKIN_THINKING_GENERATE, 'medium'),
   refine: parseThinking(process.env.TOOLKIN_THINKING_REFINE, 'medium'),
   ask: parseThinking(process.env.TOOLKIN_THINKING_ASK, 'low'),
+  verify: parseThinking(process.env.TOOLKIN_THINKING_VERIFY, 'low'),
   translate: 'low',
 };
 
