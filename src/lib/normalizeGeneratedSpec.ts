@@ -47,6 +47,9 @@ export function normalizeGeneratedSpec(input: unknown): { spec: unknown; applied
 
   const state = isRecord(root.state) ? root.state : {};
   if (!isRecord(root.state)) { root.state = state; applied.add('filled state'); }
+  normalizeDerivedAndPersist(root, state, applied);
+  normalizeDesign(root, applied);
+  normalizeFeatureEvidence(root, applied);
 
   const capabilities = new Set<string>();
   if (Array.isArray(root.capabilities)) {
@@ -55,9 +58,12 @@ export function normalizeGeneratedSpec(input: unknown): { spec: unknown; applied
   root.capabilities = [...capabilities];
 
   const screens = isRecord(root.screens) ? root.screens : {};
-  if (isRecord(root.screens)) normalizeScreenRoots(screens, applied);
+  if (!isRecord(root.screens)) root.screens = screens;
+  normalizeScreenRoots(screens, applied);
 
   const customComponents = isRecord(root.components) ? root.components : {};
+  if (!isRecord(root.components)) root.components = customComponents;
+  normalizeCustomComponentDefinitions(customComponents, applied);
   const renameMap = normalizeCustomComponentNames(customComponents, applied);
   if (renameMap.size) {
     if (isRecord(root.screens)) for (const node of Object.values(screens)) renameComponentUsages(node, renameMap);
@@ -66,6 +72,7 @@ export function normalizeGeneratedSpec(input: unknown): { spec: unknown; applied
 
   const collections = isRecord(root.collections) ? root.collections : {};
   root.collections = collections;
+  normalizeExistingCollectionShapes(collections, state, applied);
 
   const candidates = new Map<string, Candidate>();
   const steps: MutableStep[] = [];
@@ -82,6 +89,7 @@ export function normalizeGeneratedSpec(input: unknown): { spec: unknown; applied
       node.type = alias;
     }
 
+    normalizeCustomComponentUsage(node, customComponents, applied);
     normalizeCommonProps(node, applied);
 
     const type = String(node.type ?? '');
@@ -277,6 +285,7 @@ export function normalizeGeneratedSpec(input: unknown): { spec: unknown; applied
   root.capabilities = [...capabilities];
   root.state = state;
   if (Object.keys(collections).length === 0) delete root.collections;
+  if (Object.keys(customComponents).length === 0) delete root.components;
 
   if (Array.isArray(root.persist)) {
     const persist = [...new Set(root.persist.filter((key): key is string => typeof key === 'string' && key in state))];
@@ -288,14 +297,320 @@ export function normalizeGeneratedSpec(input: unknown): { spec: unknown; applied
   return { spec: root, applied: [...applied] };
 }
 
+function normalizeDerivedAndPersist(root: Record<string, unknown>, state: Record<string, unknown>, applied: Set<string>): void {
+  if (root.derived !== undefined) {
+    if (isRecord(root.derived)) {
+      const derived: Record<string, string> = {};
+      for (const [key, raw] of Object.entries(root.derived)) {
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+        if (typeof raw === 'string') derived[key] = raw;
+        else if (typeof raw === 'number' || typeof raw === 'boolean') { derived[key] = String(raw); applied.add(`coerced derived ${key}`); }
+      }
+      root.derived = derived;
+    } else { delete root.derived; applied.add('dropped invalid derived'); }
+  }
+  if (root.persist !== undefined) {
+    let values: unknown[] = [];
+    if (Array.isArray(root.persist)) values = root.persist;
+    else if (typeof root.persist === 'string') { values = [root.persist]; applied.add('wrapped persist key'); }
+    else if (isRecord(root.persist)) { values = Object.entries(root.persist).filter(([, enabled]) => enabled !== false && enabled !== null).map(([key]) => key); applied.add('converted persist map'); }
+    else { delete root.persist; return; }
+    root.persist = [...new Set(values.filter((key): key is string => typeof key === 'string' && key in state))].slice(0, 80);
+  }
+}
+
+function normalizeDesign(root: Record<string, unknown>, applied: Set<string>): void {
+  if (root.design === undefined) return;
+  if (!isRecord(root.design)) { delete root.design; applied.add('dropped invalid design'); return; }
+  const design: Record<string, unknown> = {};
+  const density = String(root.design.density ?? '').toLowerCase();
+  if (density === 'compact' || density === 'comfortable') design.density = density;
+  const card = String(root.design.cardStyle ?? root.design.cards ?? '').toLowerCase();
+  if (['soft','outlined','flat'].includes(card)) design.cardStyle = card;
+  else if (['outline','bordered'].includes(card)) { design.cardStyle = 'outlined'; applied.add('normalized design.cardStyle'); }
+  const radius = String(root.design.radius ?? '').toLowerCase();
+  if (radius === 'soft' || radius === 'round') design.radius = radius;
+  else if (['rounded','large','pill'].includes(radius)) { design.radius = 'round'; applied.add('normalized design.radius'); }
+  if (Object.keys(design).length) root.design = design;
+  else delete root.design;
+}
+
+function normalizeFeatureEvidence(root: Record<string, unknown>, applied: Set<string>): void {
+  if (root.featureEvidence === undefined) return;
+  if (!isRecord(root.featureEvidence)) { delete root.featureEvidence; applied.add('dropped invalid featureEvidence'); return; }
+  const out: Record<string, unknown> = {};
+  for (const [featureId, raw] of Object.entries(root.featureEvidence)) {
+    if (!isRecord(raw)) continue;
+    const evidence: Record<string, unknown> = {};
+    for (const key of ['screens','components','actions'] as const) {
+      const value = raw[key];
+      const list = Array.isArray(value) ? value : typeof value === 'string' ? [value] : [];
+      const clean = [...new Set(list.filter((item): item is string => typeof item === 'string' && item.trim().length > 0))];
+      if (clean.length) evidence[key] = clean;
+    }
+    const capsRaw = raw.capabilities;
+    const caps = (Array.isArray(capsRaw) ? capsRaw : typeof capsRaw === 'string' ? [capsRaw] : [])
+      .filter((item): item is string => typeof item === 'string' && knownCapabilities.has(item));
+    if (caps.length) evidence.capabilities = [...new Set(caps)];
+    out[featureId] = evidence;
+  }
+  root.featureEvidence = out;
+}
+
 function normalizeScreenRoots(screens: Record<string, unknown>, applied: Set<string>): void {
   for (const [name, raw] of Object.entries(screens)) {
-    if (!isRecord(raw)) continue;
-    if (raw.type !== 'Screen') {
-      screens[name] = { type: 'Screen', children: [raw] };
+    const node = coerceUiNode(raw, applied, `screen ${name}`);
+    if (!node) {
+      screens[name] = { type: 'Screen', children: [{ type: 'Text', value: humanize(name) }] };
+      applied.add(`recovered empty screen ${name}`);
+      continue;
+    }
+    if (node.type !== 'Screen') {
+      screens[name] = { type: 'Screen', children: [node] };
       applied.add(`wrapped screen ${name}`);
+    } else screens[name] = node;
+  }
+}
+
+/**
+ * Gemini often expresses the same declarative component shape in one of a few
+ * obvious JSON forms (component/type/kind, a one-key component object, or an
+ * array of children). Canonicalize those forms before strict validation. This
+ * is syntax recovery only: it never invents product behaviour.
+ */
+function coerceUiNode(raw: unknown, applied: Set<string>, context: string): Record<string, unknown> | null {
+  if (Array.isArray(raw)) {
+    const children = raw.map((child) => coerceUiNode(child, applied, context)).filter((child): child is Record<string, unknown> => Boolean(child));
+    applied.add(`wrapped ${context} node array`);
+    return { type: 'Stack', children };
+  }
+  if (typeof raw === 'string' || typeof raw === 'number' || typeof raw === 'boolean') {
+    applied.add(`converted ${context} scalar to Text`);
+    return { type: 'Text', value: String(raw) };
+  }
+  if (!isRecord(raw)) return null;
+
+  const node: Record<string, unknown> = { ...raw };
+  let type = typeof node.type === 'string' ? node.type.trim() : '';
+
+  if (!type && isRecord(node.type)) {
+    type = firstString(node.type.type, node.type.name, node.type.component, node.type.kind);
+    if (type) applied.add(`flattened ${context} type object`);
+  } else if (!type && Array.isArray(node.type)) {
+    type = node.type.find((value) => typeof value === 'string' && value.trim()) as string | undefined ?? '';
+    if (type) applied.add(`flattened ${context} type array`);
+  }
+
+  if (!type) {
+    const candidate = firstString(node.component, node.componentType, node.widget);
+    if (candidate) {
+      type = candidate;
+      applied.add(`mapped ${context} component to type`);
     }
   }
+
+  // Common concise model form: { "ProgressRing": { ...props } }.
+  if (!type) {
+    const entries = Object.entries(node).filter(([key]) => /^[A-Z][A-Za-z0-9]{1,39}$/.test(key));
+    if (entries.length === 1) {
+      const [candidate, body] = entries[0];
+      if (knownCoreComponents.has(candidate) || /^[A-Z][A-Za-z0-9]{1,39}$/.test(candidate)) {
+        type = candidate;
+        const bodyRecord = isRecord(body) ? body : {};
+        for (const [key, value] of Object.entries(bodyRecord)) if (node[key] === undefined) node[key] = value;
+        delete node[candidate];
+        applied.add(`expanded ${context} keyed component`);
+      }
+    }
+  }
+
+  if (!type && Array.isArray(node.children)) {
+    type = 'Stack';
+    applied.add(`filled ${context} type as Stack`);
+  }
+  if (!type && (node.value !== undefined || node.text !== undefined || node.title !== undefined || node.label !== undefined)) {
+    type = 'Text';
+    if (node.value === undefined) node.value = firstString(node.text, node.title, node.label);
+    applied.add(`filled ${context} type as Text`);
+  }
+  if (!type) {
+    type = 'Stack';
+    applied.add(`filled ${context} type as Stack`);
+  }
+
+  node.type = type;
+  delete node.component;
+  delete node.componentType;
+  delete node.widget;
+
+  // Core UiNodes store their component properties directly on the node. Models
+  // frequently use a React-like {type, props:{...}} shape; flatten it only for
+  // core components. For app-local custom components `props` is canonical and
+  // must remain nested.
+  if (knownCoreComponents.has(type) && isRecord(node.props)) {
+    for (const [key, value] of Object.entries(node.props)) if (node[key] === undefined) node[key] = value;
+    delete node.props;
+    applied.add(`flattened ${context} core props`);
+  }
+
+  if (node.onPress === undefined) {
+    const press = node.onClick ?? node.actions;
+    if (isRecord(press) || Array.isArray(press)) {
+      node.onPress = press;
+      delete node.onClick; delete node.actions;
+      applied.add(`mapped ${context} press actions`);
+    }
+  }
+
+  if (node.children !== undefined) {
+    const source = Array.isArray(node.children) ? node.children : [node.children];
+    node.children = source.map((child) => coerceUiNode(child, applied, context)).filter((child): child is Record<string, unknown> => Boolean(child));
+  }
+  return node;
+}
+
+function normalizeCustomComponentDefinitions(components: Record<string, unknown>, applied: Set<string>): void {
+  for (const [name, raw] of Object.entries(components)) {
+    if (!isRecord(raw)) {
+      const template = coerceUiNode(raw, applied, `component ${name}`);
+      if (template) components[name] = { template };
+      else delete components[name];
+      continue;
+    }
+
+    const definition: Record<string, unknown> = { ...raw };
+    let templateRaw = definition.template;
+    if (templateRaw === undefined) templateRaw = definition.root ?? definition.layout ?? definition.render ?? definition.ui;
+
+    // Another common form is to put the UiNode directly under the component
+    // definition alongside props/description instead of nesting it in template.
+    if (templateRaw === undefined && (definition.type !== undefined || definition.component !== undefined || definition.children !== undefined)) {
+      const direct: Record<string, unknown> = { ...definition };
+      delete direct.description; delete direct.props; delete direct.root; delete direct.layout; delete direct.render; delete direct.ui;
+      templateRaw = direct;
+      applied.add(`lifted component ${name} inline template`);
+    }
+
+    const template = coerceUiNode(templateRaw, applied, `component ${name} template`) ?? { type: 'Stack', children: [] };
+    definition.template = template;
+    delete definition.root; delete definition.layout; delete definition.render; delete definition.ui;
+
+    const props = normalizeCustomProps(definition.props, applied, name).slice(0, 24);
+    if (props.length) definition.props = props;
+    else delete definition.props;
+    if (definition.description !== undefined) definition.description = String(definition.description).slice(0, 300);
+
+    components[name] = definition;
+  }
+}
+
+function normalizeCustomProps(raw: unknown, applied: Set<string>, component: string): Record<string, unknown>[] {
+  const source: unknown[] = [];
+  if (Array.isArray(raw)) source.push(...raw);
+  else if (isRecord(raw)) {
+    for (const [name, descriptor] of Object.entries(raw)) {
+      if (isRecord(descriptor)) source.push({ name, ...descriptor });
+      else source.push({ name, type: descriptor });
+    }
+    applied.add(`converted component ${component} props map`);
+  } else return [];
+
+  const out: Record<string, unknown>[] = [];
+  const seen = new Set<string>();
+  for (const item of source) {
+    let name = '';
+    let descriptor: Record<string, unknown> = {};
+    if (typeof item === 'string') name = item;
+    else if (isRecord(item)) {
+      descriptor = item;
+      name = firstString(item.name, item.key, item.id, item.prop);
+    }
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || seen.has(name)) continue;
+    seen.add(name);
+
+    const kindRaw = firstString(descriptor.kind, descriptor.type, descriptor.mode).toLowerCase();
+    let kind: 'value' | 'text' | 'bind' = 'value';
+    if (['bind','binding','state','statekey','state-key'].includes(kindRaw)) kind = 'bind';
+    else if (['text','string','label','title'].includes(kindRaw)) kind = 'text';
+
+    const prop: Record<string, unknown> = { name, kind };
+    if (typeof descriptor.required === 'boolean') prop.required = descriptor.required;
+    const defaultValue = descriptor.default !== undefined ? descriptor.default : descriptor.defaultValue;
+    if (defaultValue !== undefined && isJsonCompatible(defaultValue)) prop.default = defaultValue;
+    out.push(prop);
+  }
+  if (out.length || source.length) applied.add(`normalized component ${component} props`);
+  return out;
+}
+
+function normalizeExistingCollectionShapes(collections: Record<string, unknown>, state: Record<string, unknown>, applied: Set<string>): void {
+  for (const [name, raw] of Object.entries(collections)) {
+    let schema: Record<string, unknown>;
+    if (Array.isArray(raw)) schema = { fields: raw };
+    else if (isRecord(raw)) schema = { ...raw };
+    else continue;
+
+    let fieldsRaw = schema.fields;
+    if (fieldsRaw === undefined) fieldsRaw = schema.schema ?? schema.properties ?? schema.columns;
+    const fields = normalizeRecordFields(fieldsRaw, state);
+    if (fields.length) {
+      if (!Array.isArray(schema.fields) || JSON.stringify(schema.fields) !== JSON.stringify(fields)) applied.add(`normalized collection ${name} fields`);
+      schema.fields = fields;
+    }
+    delete schema.schema; delete schema.properties;
+    if (schema.columns !== undefined && schema.fields !== schema.columns) delete schema.columns;
+
+    if (typeof schema.valueField !== 'string') {
+      const alias = firstString(schema.valueKey, schema.amountField, schema.primaryValue);
+      if (alias) { schema.valueField = alias; applied.add(`mapped collection ${name} valueField`); }
+    }
+    delete schema.valueKey; delete schema.amountField; delete schema.primaryValue;
+    collections[name] = schema;
+  }
+}
+
+function normalizeRecordFields(raw: unknown, state: Record<string, unknown>): Record<string, unknown>[] {
+  const items: [string | null, unknown][] = [];
+  if (Array.isArray(raw)) for (const item of raw) items.push([null, item]);
+  else if (isRecord(raw)) for (const entry of Object.entries(raw)) items.push(entry);
+  else return [];
+
+  const out: Record<string, unknown>[] = [];
+  const seen = new Set<string>();
+  for (const [mapKey, item] of items) {
+    let key = mapKey ?? '';
+    let descriptor: Record<string, unknown> = {};
+    let scalar: unknown = item;
+    if (typeof item === 'string' && mapKey === null) key = item;
+    else if (isRecord(item)) {
+      descriptor = item;
+      key = firstString(item.key, item.name, item.id, item.field) || key;
+      scalar = item.kind ?? item.type ?? item.value;
+    }
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || seen.has(key)) continue;
+    seen.add(key);
+    const kind = normalizeFieldKind(descriptor.kind ?? descriptor.type ?? scalar, key, state);
+    const label = firstString(descriptor.label, descriptor.title, descriptor.name) || humanize(key);
+    out.push({ key, label, kind });
+  }
+  return out;
+}
+
+function normalizeFieldKind(raw: unknown, key: string, state: Record<string, unknown>): RecordField['kind'] {
+  const value = String(raw ?? '').trim().toLowerCase();
+  if (['number','numeric','integer','float','double','currency','money'].includes(value)) return 'number';
+  if (['date','datetime','timestamp','time'].includes(value)) return 'date';
+  if (['image','photo','picture','uri'].includes(value)) return 'image';
+  if (['boolean','bool','toggle'].includes(value)) return 'boolean';
+  if (['text','string','str'].includes(value)) return 'text';
+  return inferKind(key, null, state);
+}
+
+function isJsonCompatible(value: unknown): boolean {
+  if (value === null || ['string','number','boolean'].includes(typeof value)) return true;
+  if (Array.isArray(value)) return value.every(isJsonCompatible);
+  if (isRecord(value)) return Object.values(value).every(isJsonCompatible);
+  return false;
 }
 
 function normalizeCustomComponentNames(components: Record<string, unknown>, applied: Set<string>): Map<string, string> {
@@ -323,7 +638,43 @@ function renameComponentUsages(raw: unknown, renames: Map<string, string>): void
   if (Array.isArray(raw.children)) raw.children.forEach((child) => renameComponentUsages(child, renames));
 }
 
+function normalizeCustomComponentUsage(node: Record<string, unknown>, components: Record<string, unknown>, applied: Set<string>): void {
+  const type = typeof node.type === 'string' ? node.type : '';
+  const definition = type && isRecord(components[type]) ? components[type] as Record<string, unknown> : null;
+  if (!definition || !Array.isArray(definition.props)) return;
+  const names = definition.props.filter(isRecord).map((prop) => String(prop.name ?? '')).filter(Boolean);
+  if (!names.length) return;
+  const props = isRecord(node.props) ? { ...node.props } : {};
+  let changed = false;
+  for (const name of names) {
+    if (props[name] === undefined && node[name] !== undefined) {
+      props[name] = node[name];
+      delete node[name];
+      changed = true;
+    }
+  }
+  if (changed || (!isRecord(node.props) && Object.keys(props).length)) {
+    node.props = props;
+    applied.add(`normalized ${type} usage props`);
+  }
+}
+
 function normalizeCommonProps(node: Record<string, unknown>, applied: Set<string>): void {
+  // These properties are raw expressions, not interpolation templates. Models
+  // naturally write {{progress}} inside composite templates because ordinary
+  // text props use that form; unwrap the exact-placeholder case deterministically.
+  const rawExpressionProps = new Set(['visible', 'disabled', 'progress', 'values']);
+  if (node.type === 'Repeat') rawExpressionProps.add('source');
+  for (const key of rawExpressionProps) {
+    const raw = node[key];
+    if (typeof raw !== 'string') continue;
+    const exact = raw.match(/^\{\{\s*([^{}]+?)\s*\}\}$/);
+    if (exact) {
+      node[key] = exact[1].trim();
+      applied.add(`unwrapped ${String(node.type)}.${key} expression`);
+    }
+  }
+
   if (node.children !== undefined && !Array.isArray(node.children)) {
     if (isRecord(node.children)) { node.children = [node.children]; applied.add('wrapped children array'); }
   }
@@ -361,6 +712,29 @@ function normalizeCommonProps(node: Record<string, unknown>, applied: Set<string
   if (node.type === 'ProgressBar' && node.progress === undefined && typeof node.value === 'string') node.progress = node.value;
   if (node.type === 'EmptyState' && node.title === undefined) { node.title = 'No data yet'; applied.add('filled EmptyState title'); }
   if ((node.type === 'Chart' || node.type === 'LineChart') && node.values === undefined) { node.values = '[]'; applied.add(`filled ${String(node.type)} values`); }
+
+  if (node.type === 'Select' && isRecord(node.options)) {
+    node.options = Object.entries(node.options).map(([value, raw]) => isRecord(raw)
+      ? { ...raw, value: String(raw.value ?? value), label: String(raw.label ?? raw.title ?? raw.name ?? value) }
+      : { value, label: typeof raw === 'string' ? raw : humanize(value) });
+    applied.add('converted Select options map');
+  }
+  if (node.type === 'MetricGrid' && isRecord(node.items)) {
+    node.items = Object.entries(node.items).map(([label, raw]) => isRecord(raw)
+      ? { label: String(raw.label ?? label), value: String(raw.value ?? raw.amount ?? '—'), ...(raw.hint !== undefined ? { hint: String(raw.hint) } : {}) }
+      : { label: humanize(label), value: String(raw) });
+    applied.add('converted MetricGrid items map');
+  }
+  if (node.type === 'Table' && isRecord(node.columns)) {
+    node.columns = Object.entries(node.columns).map(([key, raw]) => isRecord(raw)
+      ? { ...raw, key: String(raw.key ?? key), label: String(raw.label ?? raw.title ?? raw.name ?? key) }
+      : { key, label: typeof raw === 'string' ? raw : humanize(key) });
+    applied.add('converted Table columns map');
+  }
+  if (node.type === 'Calendar' && isRecord(node.marks)) {
+    node.marks = Object.entries(node.marks).map(([label, raw]) => isRecord(raw) ? { label: String(raw.label ?? label), ...raw } : raw).filter(isRecord);
+    applied.add('converted Calendar marks map');
+  }
 
   if (node.type === 'Select' && Array.isArray(node.options)) {
     node.options = node.options.map((raw) => {
@@ -408,6 +782,10 @@ function normalizeStep(
   applied: Set<string>,
 ): void {
   const action = typeof step.action === 'string' ? step.action : '';
+  if (typeof step.when === 'string') {
+    const exactWhen = step.when.match(/^\{\{\s*([^{}]+?)\s*\}\}$/);
+    if (exactWhen) { step.when = exactWhen[1].trim(); applied.add(`unwrapped ${action || 'action'}.when expression`); }
+  }
   const requiredCapability = capabilityByAction.get(action);
   if (requiredCapability && !capabilities.has(requiredCapability)) {
     capabilities.add(requiredCapability);
@@ -526,6 +904,7 @@ function sanitizeCollectionSchemas(collections: Record<string, unknown>, applied
       fields.push({ key: field.key, label: typeof field.label === 'string' ? field.label : humanize(field.key), kind: validFieldKind(field.kind) ? field.kind : inferKind(field.key, null, {}) });
     }
     if (fields.length !== raw.fields.length) applied.add(`cleaned collection ${name}`);
+    if (fields.length > 24) { fields.length = 24; applied.add(`trimmed collection ${name} fields`); }
     raw.fields = fields;
     if (typeof raw.valueField === 'string' && !seen.has(raw.valueField)) {
       const numeric = fields.find((field) => field.kind === 'number');

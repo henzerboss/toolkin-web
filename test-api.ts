@@ -109,6 +109,69 @@ const logSpec = afterNormalize.ok ? afterNormalize.spec : null;
 assert.strictEqual(logSpec?.collections?.log.fields.find((f) => f.key === 'score')?.kind, 'number');
 console.log('Missing named collection is deterministically recovered before validation');
 
+// Regression for the production failure from 2026-08-13. Gemini produced a
+// semantically valid meal schema/custom UI using common alternative JSON
+// shapes: collection fields as a map, component props as a map/type aliases,
+// and template type through component/type objects. Canonicalization must make
+// these shapes strict Spec v2 without spending another model call.
+const alternateComponentShapes = {
+  schemaVersion: 2,
+  id: 'meal-tracker-shapes', version: 1,
+  manifest: { name: 'Дневник питания', icon: '🍽️', color: 'green', locale: 'ru' },
+  capabilities: [],
+  state: { progress: 0.5, progressText: '1200 / 2400', mealTitle: 'Омлет', mealKcal: 420 },
+  collections: {
+    meals: {
+      fields: {
+        title: { type: 'string', label: 'Блюдо' },
+        kcal: { type: 'number', label: 'Ккал' },
+        photo: 'image',
+      },
+      valueKey: 'kcal',
+    },
+  },
+  components: {
+    DailyProgressRing: {
+      props: { progress: 'number', value: 'string', label: 'text' },
+      template: { component: 'ProgressRing', props: { progress: '{{progress}}', value: '{{value}}', label: '{{label}}' } },
+    },
+    FoodEntryCard: {
+      props: [
+        { key: 'title', type: 'string', required: true },
+        { name: 'kcal', type: 'number', required: true },
+        'subtitle',
+        { name: 'recordId', type: 'value' },
+      ],
+      template: {
+        type: { name: 'Card' },
+        children: [
+          { type: 'Text', value: '{{title}}' },
+          { type: 'Text', value: '{{kcal | integer}} kcal' },
+        ],
+      },
+    },
+  },
+  screens: {
+    home: { type: 'Screen', children: [
+      { type: 'DailyProgressRing', props: { progress: '{{progress}}', value: '{{progressText}}', label: 'Сегодня' } },
+      { type: 'FoodEntryCard', title: '{{mealTitle}}', kcal: '{{mealKcal}}', subtitle: 'Завтрак', recordId: 'demo' },
+    ] },
+  },
+  navigation: { start: 'home', mode: 'single' },
+};
+const alternateNormalized = normalizeGeneratedSpec(alternateComponentShapes);
+const alternateSpec = alternateNormalized.spec as MiniAppSpec;
+assert.ok(Array.isArray(alternateSpec.collections?.meals.fields));
+assert.strictEqual(alternateSpec.collections?.meals.fields.find((f) => f.key === 'kcal')?.kind, 'number');
+assert.strictEqual(alternateSpec.collections?.meals.valueField, 'kcal');
+assert.ok(Array.isArray(alternateSpec.components?.DailyProgressRing.props));
+assert.strictEqual(alternateSpec.components?.DailyProgressRing.template.type, 'ProgressRing');
+assert.ok(Array.isArray(alternateSpec.components?.FoodEntryCard.props));
+assert.strictEqual(alternateSpec.components?.FoodEntryCard.template.type, 'Card');
+const alternateValidation = validateSpec(alternateSpec);
+assert.ok(alternateValidation.ok, alternateValidation.ok ? '' : alternateValidation.errors.join(' | '));
+console.log('Alternate collection/custom-component JSON shapes canonicalize to strict Spec v2');
+
 
 // Regression for the next production failure: recoverable model slips must be
 // normalized/autofixed BEFORE the strict validator, otherwise the repair loop
