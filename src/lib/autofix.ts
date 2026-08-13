@@ -114,6 +114,16 @@ function fixNode(node: UiNode, applied: Set<string>): UiNode {
     result.children = node.children.map((child) => fixNode(child, applied));
   }
 
+  // Вкладки: у каждой свой набор узлов, и их тоже надо чинить.
+  if (Array.isArray(node.tabs)) {
+    result.tabs = (node.tabs as unknown as Record<string, unknown>[]).map((tab) => ({
+      ...tab,
+      children: Array.isArray(tab.children)
+        ? (tab.children as UiNode[]).map((child) => fixNode(child, applied))
+        : tab.children,
+    }));
+  }
+
   // marks у календаря: каждое множество содержит выражение в dates.
   if (Array.isArray(node.marks)) {
     result.marks = (node.marks as unknown as Record<string, unknown>[]).map((set) => ({
@@ -133,19 +143,11 @@ export function autofix(spec: MiniAppSpec): AutofixResult {
     derived[key] = fixExpression(expression, applied);
   }
 
-  const screens = spec.screens
-    ? Object.fromEntries(Object.entries(spec.screens).map(([key, root]) => [key, fixNode(root, applied)]))
-    : undefined;
-  const components = spec.components
-    ? Object.fromEntries(Object.entries(spec.components).map(([key, definition]) => [key, { ...definition, template: fixNode(definition.template, applied) }]))
-    : undefined;
-
   return {
     spec: {
       ...spec,
       ...(spec.derived ? { derived } : {}),
-      ...(screens ? { screens } : {}),
-      ...(components ? { components } : {}),
+      ui: fixNode(spec.ui, applied),
     },
     applied: [...applied],
   };

@@ -57,16 +57,7 @@ export async function POST(req: Request) {
   }
 
   const lang = languageName(body.locale);
-  let fields: Record<string, string> | null = null;
-  if (body.fields && typeof body.fields === 'object' && !Array.isArray(body.fields)) {
-    const sanitized: Record<string, string> = {};
-    for (const [key, value] of Object.entries(body.fields).slice(0, 16)) {
-      if (!/^[A-Za-z_][A-Za-z0-9_]{0,39}$/.test(key) || typeof value !== 'string') continue;
-      const description = value.trim().slice(0, 240);
-      if (description) sanitized[key] = description;
-    }
-    if (Object.keys(sanitized).length) fields = sanitized;
-  }
+  const fields = body.fields && Object.keys(body.fields).length > 0 ? body.fields : null;
 
   /**
    * Структурированный ответ существует потому, что свободный текст нельзя
@@ -103,24 +94,18 @@ export async function POST(req: Request) {
   });
   if (!result.ok) return json({ error: result.error ?? 'model_unavailable' }, 503, headers);
 
+  const charged = await charge(account!.appUserId, 'ask', price, { appId: body.appId });
+
   if (fields) {
     const parsed = safeJsonParse<Record<string, unknown> | null>(result.text ?? '', null);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      return json({ error: 'bad_model_json' }, 502, headers);
-    }
+    if (!parsed) return json({ error: 'bad_model_json', text: result.text }, 502, headers);
 
-    // Validate the usable result before charging. A malformed structured model
-    // response is a failed request and must not cost the user credits.
+    // Возвращаем только запрошенные ключи: лишние поля модель иногда добавляет
+    // от себя, а утилите некуда их положить.
     const values: Record<string, unknown> = {};
     for (const key of Object.keys(fields)) values[key] = parsed[key] ?? null;
-    const charged = await charge(account!.appUserId, 'ask', price, { appId: body.appId });
-    if (!charged.ok) return json({ error: 'insufficient_credits', credits: charged.credits, price }, 402, headers);
     return json({ values, credits: charged.credits }, 200, headers);
   }
 
-  const text = (result.text ?? '').trim();
-  if (!text) return json({ error: 'empty_response' }, 502, headers);
-  const charged = await charge(account!.appUserId, 'ask', price, { appId: body.appId });
-  if (!charged.ok) return json({ error: 'insufficient_credits', credits: charged.credits, price }, 402, headers);
-  return json({ text, credits: charged.credits }, 200, headers);
+  return json({ text: (result.text ?? '').trim(), credits: charged.credits }, 200, headers);
 }

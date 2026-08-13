@@ -1,26 +1,56 @@
 import { ACTION_NAMES, CAPABILITIES, COMPONENT_TYPES } from '@/lib/dsl';
 import { THINKING, callGemini, safeJsonParse } from './_shared';
 
-export type AppKind = 'game' | 'tracker' | 'calculator' | 'timer' | 'converter' | 'ai_tool' | 'image_tool' | 'list' | 'countdown' | 'other';
+/**
+ * Первый этап генерации: короткий план вместо сразу спеки.
+ *
+ * Зачем он нужен. Системный промпт разросся до четырнадцати тысяч знаков, и
+ * правила из его середины модель теряла — отсюда игры, собранные из кнопок,
+ * и числа, вытащенные из свободного текста. Дублирование правил в конце помогло
+ * частично, но это подпорка.
+ *
+ * План решает то же самое архитектурно. Он маленький, целиком описывается
+ * схемой, и потому ограниченное декодирование гарантирует: в нём не окажется
+ * несуществующего компонента или возможности. А главное — план настолько
+ * прост, что его ошибки можно исправить кодом, а не уговорами: если тип
+ * «игра», песочница добавляется принудительно, и никакой промпт для этого
+ * больше не нужен.
+ *
+ * Дальше второй этап получает промпт втрое короче — только те разделы,
+ * которые относятся к выбранному типу утилиты.
+ */
 
+export type AppKind =
+  | 'game'
+  | 'tracker'
+  | 'calculator'
+  | 'timer'
+  | 'converter'
+  | 'ai_tool'
+  | 'image_tool'
+  | 'list'
+  | 'countdown'
+  | 'other';
+
+/**
+ * Фича — единица продуктовой ценности, которую пользователь может включить
+ * или выключить.
+ *
+ * Поля requires* существуют не для модели, а для проверки: по ним видно,
+ * реализована ли фича на самом деле. Пользователь выбрал «напоминания» —
+ * значит в спеке обязан быть экшен notify.at, иначе обещание нарушено.
+ * Без этой механики список фич был бы декорацией.
+ */
 export interface Feature {
   id: string;
   title: string;
   description: string;
+  /** Основные включены по умолчанию и снимаются пользователем осознанно. */
   essential: boolean;
-  /** Observable user outcomes, not implementation details. */
-  acceptanceCriteria: string[];
-  /** Data/AI semantics needed by this specific feature. */
-  requiresRecords?: boolean;
-  requiresStructuredAi?: boolean;
-  /** Exact mechanical minimums. Never list visual substitutes. */
   requiresComponents: string[];
   requiresActions: string[];
   requiresCapabilities: string[];
 }
-
-export interface PlannedScreen { id: string; title: string; purpose: string }
-export interface PlannedCustomComponent { name: string; purpose: string; strategy: 'compose' | 'extend' }
 
 export interface Plan {
   kind: AppKind;
@@ -30,21 +60,17 @@ export interface Plan {
   needsRecords: boolean;
   needsStructuredAi: boolean;
   summary: string;
-  navigation: 'single' | 'stack' | 'tabs';
-  screens: PlannedScreen[];
-  customComponents: PlannedCustomComponent[];
   features: Feature[];
 }
 
-const KINDS: AppKind[] = ['game', 'tracker', 'calculator', 'timer', 'converter', 'ai_tool', 'image_tool', 'list', 'countdown', 'other'];
-const KIND_SET = new Set<string>(KINDS);
-const COMPONENT_SET = new Set<string>(COMPONENT_TYPES);
-const ACTION_SET = new Set<string>(ACTION_NAMES);
-const CAPABILITY_SET = new Set<string>(CAPABILITIES);
+const KINDS: AppKind[] = [
+  'game', 'tracker', 'calculator', 'timer', 'converter',
+  'ai_tool', 'image_tool', 'list', 'countdown', 'other',
+];
 
 /**
- * Planner-only schema. `_shared` converts this compact OpenAPI-style representation
- * to JSON Schema and sends it as Interactions API response_format.schema.
+ * Схема плана. Перечисления берутся из манифеста DSL, поэтому список
+ * компонентов в схеме не может разойтись с рантаймом.
  */
 const FEATURE_SCHEMA: Record<string, unknown> = {
   type: 'OBJECT',
@@ -53,33 +79,15 @@ const FEATURE_SCHEMA: Record<string, unknown> = {
     title: { type: 'STRING' },
     description: { type: 'STRING' },
     essential: { type: 'BOOLEAN' },
-    acceptanceCriteria: { type: 'ARRAY', items: { type: 'STRING' }, minItems: 1, maxItems: 4 },
-    requiresRecords: { type: 'BOOLEAN' },
-    requiresStructuredAi: { type: 'BOOLEAN' },
     requiresComponents: { type: 'ARRAY', items: { type: 'STRING', enum: COMPONENT_TYPES } },
     requiresActions: { type: 'ARRAY', items: { type: 'STRING', enum: ACTION_NAMES } },
     requiresCapabilities: { type: 'ARRAY', items: { type: 'STRING', enum: [...CAPABILITIES] } },
   },
-  required: [
-    'id', 'title', 'description', 'essential', 'acceptanceCriteria', 'requiresRecords',
-    'requiresStructuredAi', 'requiresComponents', 'requiresActions', 'requiresCapabilities',
+  required: ['id', 'title', 'description', 'essential', 'requiresComponents', 'requiresActions', 'requiresCapabilities'],
+  propertyOrdering: [
+    'id', 'title', 'description', 'essential',
+    'requiresComponents', 'requiresActions', 'requiresCapabilities',
   ],
-};
-
-const SCREEN_SCHEMA: Record<string, unknown> = {
-  type: 'OBJECT',
-  properties: { id: { type: 'STRING' }, title: { type: 'STRING' }, purpose: { type: 'STRING' } },
-  required: ['id', 'title', 'purpose'],
-};
-
-const CUSTOM_SCHEMA: Record<string, unknown> = {
-  type: 'OBJECT',
-  properties: {
-    name: { type: 'STRING' },
-    purpose: { type: 'STRING' },
-    strategy: { type: 'STRING', enum: ['compose', 'extend'] },
-  },
-  required: ['name', 'purpose', 'strategy'],
 };
 
 const PLAN_SCHEMA: Record<string, unknown> = {
@@ -87,247 +95,175 @@ const PLAN_SCHEMA: Record<string, unknown> = {
   properties: {
     kind: { type: 'STRING', enum: KINDS },
     title: { type: 'STRING' },
-    summary: { type: 'STRING' },
-    navigation: { type: 'STRING', enum: ['single', 'stack', 'tabs'] },
-    screens: { type: 'ARRAY', items: SCREEN_SCHEMA, minItems: 1, maxItems: 4 },
-    customComponents: { type: 'ARRAY', items: CUSTOM_SCHEMA, maxItems: 8 },
-    features: { type: 'ARRAY', items: FEATURE_SCHEMA, minItems: 1, maxItems: 8 },
-    needsRecords: { type: 'BOOLEAN' },
-    needsStructuredAi: { type: 'BOOLEAN' },
     capabilities: { type: 'ARRAY', items: { type: 'STRING', enum: [...CAPABILITIES] } },
     components: { type: 'ARRAY', items: { type: 'STRING', enum: COMPONENT_TYPES } },
+    needsRecords: { type: 'BOOLEAN' },
+    needsStructuredAi: { type: 'BOOLEAN' },
+    summary: { type: 'STRING' },
+    features: { type: 'ARRAY', items: FEATURE_SCHEMA, minItems: 3, maxItems: 7 },
   },
   required: [
-    'kind', 'title', 'summary', 'navigation', 'screens', 'customComponents', 'features',
-    'needsRecords', 'needsStructuredAi', 'capabilities', 'components',
+    'kind', 'title', 'capabilities', 'components',
+    'needsRecords', 'needsStructuredAi', 'summary', 'features',
   ],
+  // Порядок влияет на качество: модель заполняет поля по очереди, и решение
+  // о типе утилиты должно быть принято до выбора компонентов.
   propertyOrdering: [
-    'kind', 'title', 'summary', 'navigation', 'screens', 'customComponents', 'features',
+    'kind', 'title', 'summary', 'features',
     'needsRecords', 'needsStructuredAi', 'capabilities', 'components',
   ],
 };
 
 const PLAN_SYSTEM = [
-  'You are a senior mobile product manager and UX architect. Plan the PRODUCT first; do not write the runtime JSON yet.',
-  'Design the ideal small mobile app for the user request before adapting it to the existing component library.',
-  'The runtime supports 1-4 screens, stack or tabs navigation, records, AI/device actions, and safe app-specific composite components.',
+  'You plan small single-screen mobile utilities. You do not write the utility yet.',
+  'Decide what kind of thing the request is, then propose the features worth having.',
   '',
-  'FEATURES: propose 3-8 genuinely useful user outcomes when the product needs them, but never pad a simple app with fake features. Return at least 1. Do not merely restate the request or name a UI component.',
-  'For each feature include 1-4 acceptanceCriteria: observable statements that make it clear the feature actually works.',
-  'Set requiresRecords per feature when that outcome depends on persistent user-created data; set requiresStructuredAi only when that feature needs typed AI output.',
-  'requiresComponents/actions/capabilities are STRICT minimums only. If a feature can be implemented with several UX patterns, leave component requirements empty rather than naming a substitute.',
-  'Use runtime semantics when choosing strict minimums: core List is newest-first and has built-in row deletion. If deletion is required and you choose List, require List; if the UX uses Repeat/custom cards instead, require records.remove.',
-  'For a feature that explicitly promises photo capture + AI analysis + saving, require camera.capture, llm.ask and records.add plus camera/llm capabilities. For a feature that explicitly promises a visible progress bar/ring, require that exact visible component family named by the criterion.',
-  'Never say Calendar can be replaced by DateField, Chart by ProgressRing, or one AI action by another. Requirements are exact.',
+  'FEATURES are the point of this step. A person asking for a "period tracker" has not',
+  'thought through what it should do — that is your job. Propose 3 to 7 features that',
+  'make the utility genuinely useful, ordered by value, and say honestly which are',
+  'essential and which are optional. The person will tick them off before you build.',
   '',
-  'SCREENS: choose the simplest information architecture that makes the app convenient. 1 screen is fine for a calculator; trackers often need Home/Add/History. Maximum 4.',
-  'navigation: single for one screen, stack for drill-down/add/edit flows, tabs only when 2-4 peer destinations are used repeatedly.',
+  'A good feature is something the person would miss if it were absent:',
+  '  period tracker  → cycle prediction, fertile window on a calendar, period logging,',
+  '                    reminder before the next period, symptom notes, cycle length stats',
+  '  expense tracker → quick entry, split by category, monthly total, chart, export',
+  '  water tracker   → daily goal from weight, one-tap portions, progress ring, reminders',
+  'A bad feature is a restatement of the request ("tracks periods") or a component name',
+  '("has a calendar"). Describe what the person gets, in their language, in one line.',
   '',
-  'CUSTOM COMPONENT GAP ANALYSIS: imagine the ideal control first. If core components would force an awkward UX, propose an app-specific PascalCase component in customComponents.',
-  'strategy=compose means it can be built from safe declarative primitives; strategy=extend means it specializes an existing control. Do not propose native code.',
-  'Examples: HabitWeekGrid, ExpenseCard, WorkoutSetRow, CycleSummaryCard. Avoid custom components when a normal Button/Text/Card/Field is already ideal.',
+  'requiresComponents, requiresActions, requiresCapabilities: the MINIMUM the feature',
+  'cannot exist without. These are checked mechanically, so listing extras only causes',
+  'false failures. Rules of thumb:',
+  '  - leave the lists empty when the feature is just a calculation shown on screen',
+  '  - text input, sliders and steppers write state by themselves: no action needed',
+  '  - list only a capability when the feature truly needs the device: notifications,',
+  '    camera, llm, image',
+  '  - never list a component just because it looks nice — only when the feature is',
+  '    meaningless without it (a calendar feature genuinely needs Calendar)',
   '',
-  'components is only a list of likely CORE building blocks, never a whitelist for the builder.',
-  'needsRecords=true when user-created entries/history are persistent. needsStructuredAi=true when AI must return numeric/fixed fields rather than prose.',
-  'kind game must use Sandbox for the actual continuous game/canvas logic. image_tool uses image capability.',
-  'title <= 24 chars. All user-facing title/summary/features/screens are in the user language.',
+  'Remember the utility is ONE screen with 4 to 8 blocks. Do not propose features that',
+  'would need a second screen or a settings page.',
+  '',
+  'kind:',
+  '  game       — anything played: snake, breakout, tic-tac-toe, memory, puzzle, reaction test',
+  '  tracker    — records something over time: water, weight, expenses, workouts',
+  '  calculator — computes a result from inputs: tips, mortgage, BMI, percentages',
+  '  timer      — countdown or interval: eggs, pomodoro, workout rounds',
+  '  converter  — units, currencies, sizes',
+  '  ai_tool    — the model answers something: recipes, translation, photo analysis',
+  '  image_tool — generates pictures',
+  '  list       — checklists, shopping lists',
+  '  countdown  — days until a date, anniversaries, birthdays',
+  '',
+  'needsRecords: true when entries accumulate over time and history matters.',
+  'needsStructuredAi: true when a number or a fixed field must come back from the model.',
+  'summary: one sentence on what the utility does, in the user language.',
+  'title: short name for the utility, max 24 characters, in the user language.',
 ].join('\n');
 
 /**
- * Used only for the second planner attempt when provider-side structured-output
- * validation rejects a schema. JSON MIME type remains enabled, but no response
- * schema is attached to the HTTP request.
+ * Детерминированная коррекция плана.
+ *
+ * Всё, что здесь чинится, раньше пытались объяснить модели словами и
+ * повторяли по три раза в промпте. План достаточно прост, чтобы просто
+ * исправить его кодом — и тогда правило перестаёт быть вероятностным.
  */
-const JSON_CONTRACT = [
-  '',
-  'Return one JSON object with EXACTLY this top-level shape:',
-  '{',
-  '  "kind": "tracker|calculator|timer|converter|ai_tool|image_tool|game|list|countdown|other",',
-  '  "title": "...", "summary": "...", "navigation": "single|stack|tabs",',
-  '  "screens": [{"id":"home","title":"...","purpose":"..."}],',
-  '  "customComponents": [{"name":"PascalCaseName","purpose":"...","strategy":"compose|extend"}],',
-  '  "features": [{',
-  '    "id":"stable-id","title":"...","description":"...","essential":true,',
-  '    "acceptanceCriteria":["observable outcome"],',
-  '    "requiresRecords":false,"requiresStructuredAi":false,',
-  '    "requiresComponents":[],"requiresActions":[],"requiresCapabilities":[]',
-  '  }],',
-  '  "needsRecords": false, "needsStructuredAi": false, "capabilities": [], "components": []',
-  '}',
-  'No markdown and no commentary outside the JSON object.',
-].join('\n');
+function correct(plan: Plan): Plan {
+  const capabilities = new Set(plan.capabilities);
+  const components = new Set(plan.components);
 
-const EMPTY_PLAN: Plan = {
-  kind: 'other', title: '', capabilities: [], components: [], needsRecords: false,
-  needsStructuredAi: false, summary: '', navigation: 'single',
-  screens: [{ id: 'home', title: '', purpose: '' }], customComponents: [], features: [],
+  if (plan.kind === 'game') {
+    // Игра целиком живёт в песочнице. Именно это правило модель нарушала чаще
+    // всего, собирая поле из кнопок, которое не может ни ходить за противника,
+    // ни анимироваться.
+    capabilities.add('sandbox');
+    components.add('Sandbox');
+    ['Button', 'Select', 'Slider', 'Stepper', 'Toggle'].forEach((type) => components.delete(type));
+  }
+
+  if (plan.kind === 'image_tool') {
+    capabilities.add('image');
+    components.add('Image');
+  }
+
+  if (capabilities.has('camera')) {
+    components.add('Image');
+    // Снимок в истории должен быть виден: иначе в таблицу печатается путь
+    // к файлу, а пользователь считает, что фото не сохранилось.
+    if (plan.needsRecords) components.add('Gallery');
+  }
+
+  if (capabilities.has('image')) components.add('Image');
+  if (capabilities.has('llm') && plan.kind === 'image_tool') capabilities.add('image');
+
+  if (plan.needsRecords && !components.has('Gallery') && !components.has('Table')) {
+    components.add('List');
+  }
+
+  // Календарь без выбора даты бесполезен: задать точку отсчёта нечем.
+  if (components.has('Calendar')) components.add('DateField');
+
+  return {
+    ...plan,
+    capabilities: [...capabilities],
+    components: [...components],
+  };
+}
+
+const FALLBACK: Plan = {
+  kind: 'other',
+  title: '',
+  capabilities: [],
+  components: [],
+  needsRecords: false,
+  needsStructuredAi: false,
+  summary: '',
+  features: [],
 };
 
 export interface PlanResult {
   plan: Plan;
+  /** false — планирование не удалось, второй этап пойдёт с полным промптом. */
   ok: boolean;
-  /** How the plan was obtained; useful for server diagnostics and tests. */
-  mode?: 'structured' | 'json' | 'local';
-  /** Provider/parser failure is logged server-side, never shown as raw text in UI. */
-  diagnostic?: string;
-}
-
-function safeId(value: unknown, fallback: string): string {
-  const id = String(value ?? '').trim().replace(/[^A-Za-z0-9_-]/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
-  return id || fallback;
-}
-
-function exactList(raw: unknown, allowed: Set<string>): string[] {
-  if (!Array.isArray(raw)) return [];
-  return [...new Set(raw.filter((item): item is string => typeof item === 'string' && allowed.has(item)))];
 }
 
 function normalizeFeatures(raw: unknown): Feature[] {
   if (!Array.isArray(raw)) return [];
+
   const seen = new Set<string>();
-  const out: Feature[] = [];
+  const features: Feature[] = [];
+
   for (const item of raw as Partial<Feature>[]) {
-    const id = safeId(item?.id, `feature-${out.length + 1}`);
+    const id = String(item?.id ?? '').trim().slice(0, 40);
     const title = String(item?.title ?? '').trim();
-    if (!title || seen.has(id)) continue;
+    if (!id || !title || seen.has(id)) continue;
     seen.add(id);
-    const criteria = Array.isArray(item.acceptanceCriteria)
-      ? item.acceptanceCriteria.map((x) => String(x).trim()).filter(Boolean).slice(0, 4)
-      : [];
-    out.push({
+
+    features.push({
       id,
-      title: title.slice(0, 70),
-      description: String(item.description ?? '').trim().slice(0, 180),
+      title: title.slice(0, 60),
+      description: String(item.description ?? '').slice(0, 140),
       essential: Boolean(item.essential),
-      acceptanceCriteria: criteria.length ? criteria : [String(item.description || title).slice(0, 180)],
-      requiresRecords: Boolean(item.requiresRecords),
-      requiresStructuredAi: Boolean(item.requiresStructuredAi),
-      requiresComponents: exactList(item.requiresComponents, COMPONENT_SET),
-      requiresActions: exactList(item.requiresActions, ACTION_SET),
-      requiresCapabilities: exactList(item.requiresCapabilities, CAPABILITY_SET),
+      requiresComponents: Array.isArray(item.requiresComponents) ? item.requiresComponents : [],
+      requiresActions: Array.isArray(item.requiresActions) ? item.requiresActions : [],
+      requiresCapabilities: Array.isArray(item.requiresCapabilities) ? item.requiresCapabilities : [],
     });
   }
-  return out.slice(0, 8);
-}
 
-function normalizeScreens(raw: unknown): PlannedScreen[] {
-  if (!Array.isArray(raw)) return EMPTY_PLAN.screens;
-  const seen = new Set<string>();
-  const out: PlannedScreen[] = [];
-  for (const item of raw as Partial<PlannedScreen>[]) {
-    const id = safeId(item.id, `screen-${out.length + 1}`).toLowerCase();
-    if (seen.has(id)) continue;
-    seen.add(id);
-    out.push({ id, title: String(item.title ?? '').trim().slice(0, 40), purpose: String(item.purpose ?? '').trim().slice(0, 180) });
-  }
-  return out.length ? out.slice(0, 4) : EMPTY_PLAN.screens;
-}
-
-function normalizeCustom(raw: unknown): PlannedCustomComponent[] {
-  if (!Array.isArray(raw)) return [];
-  const seen = new Set<string>();
-  const out: PlannedCustomComponent[] = [];
-  for (const item of raw as Partial<PlannedCustomComponent>[]) {
-    let name = String(item.name ?? '').replace(/[^A-Za-z0-9]/g, '').slice(0, 40);
-    if (!/^[A-Z]/.test(name)) name = `App${name || 'Component'}`;
-    if (seen.has(name) || COMPONENT_SET.has(name)) continue;
-    seen.add(name);
-    out.push({ name, purpose: String(item.purpose ?? '').trim().slice(0, 220), strategy: item.strategy === 'extend' ? 'extend' : 'compose' });
-  }
-  return out.slice(0, 8);
-}
-
-function correct(plan: Plan): Plan {
-  const capabilities = new Set(plan.capabilities);
-  const components = new Set(plan.components);
-  if (plan.kind === 'game') { capabilities.add('sandbox'); components.add('Sandbox'); }
-  if (plan.kind === 'image_tool') { capabilities.add('image'); components.add('Image'); }
-  if (capabilities.has('camera')) components.add('Image');
-  if (capabilities.has('image')) components.add('Image');
-  return { ...plan, capabilities: [...capabilities], components: [...components] };
-}
-
-/** Normalize either a structured-output response or a JSON-only fallback. */
-export function normalizePlanCandidate(raw: unknown): Plan | null {
-  if (!raw || typeof raw !== 'object') return null;
-  const parsed = raw as Partial<Plan>;
-  const features = normalizeFeatures(parsed.features);
-  if (features.length < 1) return null;
-  const screens = normalizeScreens(parsed.screens);
-  let navigation: Plan['navigation'] = parsed.navigation === 'tabs' || parsed.navigation === 'stack' ? parsed.navigation : 'single';
-  if (screens.length === 1) navigation = 'single';
-  if (screens.length > 1 && navigation === 'single') navigation = 'stack';
-
-  return correct({
-    kind: KIND_SET.has(String(parsed.kind)) ? parsed.kind as AppKind : 'other',
-    title: String(parsed.title ?? '').trim().slice(0, 24),
-    summary: String(parsed.summary ?? '').trim().slice(0, 500),
-    navigation,
-    screens,
-    customComponents: normalizeCustom(parsed.customComponents),
-    features,
-    needsRecords: Boolean(parsed.needsRecords),
-    needsStructuredAi: Boolean(parsed.needsStructuredAi),
-    capabilities: exactList(parsed.capabilities, CAPABILITY_SET),
-    components: exactList(parsed.components, COMPONENT_SET),
-  });
-}
-
-function inferKind(request: string): AppKind {
-  const q = request.toLocaleLowerCase();
-  if (/\b(game|игр[ауы]|juego)\b/.test(q)) return 'game';
-  if (/таймер|секундомер|\btimer\b|cron[oó]metro/.test(q)) return 'timer';
-  if (/обратн.{0,8}отсч|countdown/.test(q)) return 'countdown';
-  if (/конверт|converter|convertir|conversion/.test(q)) return 'converter';
-  if (/калькул|calculator|calculadora|расч[её]т/.test(q)) return 'calculator';
-  if (/трекер|дневник|уч[её]т|tracker|diary|registro|seguimiento/.test(q)) return 'tracker';
-  if (/список|checklist|\blist\b|lista/.test(q)) return 'list';
-  if (/картин|изображ|image|imagen|генератор фото/.test(q)) return 'image_tool';
-  if (/\bai\b|\bии\b|нейро|assistant|ассистент/.test(q)) return 'ai_tool';
-  return 'other';
+  return features.slice(0, 7);
 }
 
 /**
- * Last-resort Product Plan. It is intentionally conservative and does not invent
- * capabilities. The user still gets the mandatory feature-review screen and can
- * edit/add features instead of hitting a dead end because a provider returned
- * malformed JSON. Generation remains protected by the normal validation/repair
- * pipeline and is not charged on failure.
+ * Пересобирает план под выбранные пользователем фичи.
+ *
+ * Снятая галочка должна убирать из плана и требования этой фичи — иначе
+ * утилита получит камеру, о которой человек не просил, и это будет выглядеть
+ * как игнорирование его выбора.
  */
-export function createLocalPlan(request: string): Plan {
-  const clean = request.replace(/\s+/g, ' ').trim().slice(0, 180);
-  const kind = inferKind(clean);
-  const needsRecords = kind === 'tracker' || kind === 'list';
-  const title = clean.slice(0, 24);
-  return correct({
-    kind,
-    title,
-    summary: clean,
-    navigation: 'single',
-    screens: [{ id: 'home', title, purpose: clean }],
-    customComponents: [],
-    features: [{
-      id: 'core',
-      title: clean.slice(0, 70),
-      description: clean,
-      essential: true,
-      acceptanceCriteria: [clean],
-      requiresRecords: needsRecords,
-      requiresStructuredAi: false,
-      requiresComponents: [],
-      requiresActions: [],
-      requiresCapabilities: [],
-    }],
-    needsRecords,
-    needsStructuredAi: false,
-    capabilities: [],
-    components: [],
-  });
-}
-
-/** Derive a build plan from the exact feature selection the user made. */
 export function planForFeatures(plan: Plan, selectedIds: string[]): Plan {
   const selected = plan.features.filter((feature) => selectedIds.includes(feature.id));
+  if (selected.length === 0) return plan;
+
   const components = new Set<string>();
   const capabilities = new Set<string>();
   const actions = new Set<string>();
@@ -338,84 +274,44 @@ export function planForFeatures(plan: Plan, selectedIds: string[]): Plan {
     feature.requiresActions.forEach((item) => actions.add(item));
   }
 
-  // Keep only structural hints; feature-specific requirements are re-derived above.
-  for (const item of plan.components) {
-    if (['Screen', 'Stack', 'Row', 'Grid', 'Card', 'Section', 'Text', 'Button', 'EmptyState'].includes(item)) components.add(item);
-  }
+  // Записи и структурированный ответ выводятся из требований фич, а не
+  // остаются от первоначального плана.
+  const needsRecords = [...actions].some((action) => action.startsWith('records.'));
+  const needsStructuredAi = capabilities.has('llm') && plan.needsStructuredAi;
 
-  const recordComponents = new Set(['List', 'Table', 'Gallery', 'Chart', 'LineChart', 'PieChart']);
-  const needsRecords = selected.some((feature) => Boolean(feature.requiresRecords))
-    || [...actions].some((action) => action.startsWith('records.'))
-    || [...components].some((component) => recordComponents.has(component));
-  const needsStructuredAi = selected.some((feature) => Boolean(feature.requiresStructuredAi))
-    || (capabilities.has('llm') && plan.needsStructuredAi && selected.length === plan.features.length);
-
-  // If every proposed feature was deselected (for example, the user keeps only
-  // a custom feature), do not leak the original feature-specific IA into it.
-  const emptySelection = selected.length === 0;
   return correct({
     ...plan,
     features: selected,
     components: [...components],
     capabilities: [...capabilities],
-    needsRecords,
+    needsRecords: needsRecords || plan.needsRecords,
     needsStructuredAi,
-    navigation: emptySelection ? 'single' : plan.navigation,
-    screens: emptySelection ? [plan.screens[0] ?? EMPTY_PLAN.screens[0]] : plan.screens,
-    customComponents: emptySelection ? [] : plan.customComponents,
   });
 }
 
 export async function planApp(request: string, locale: string): Promise<PlanResult> {
-  const system = `${PLAN_SYSTEM}
+  const result = await callGemini(
+    `${PLAN_SYSTEM}\n\nUser language: ${locale}.`,
+    `User request: "${request.slice(0, 600)}"`,
+    { jsonOnly: true, thinking: THINKING.plan, purpose: 'plan', responseSchema: PLAN_SCHEMA },
+  );
 
-User language/locale: ${locale}.`;
-  const user = `User request: ${JSON.stringify(request.slice(0, 800))}`;
-  let diagnostic = '';
+  if (!result.ok) return { plan: FALLBACK, ok: false };
 
-  // Production primary path: JSON object mode plus our own strict normalizer.
-  // Provider-side nested planner schemas have repeatedly produced 400 responses
-  // while the exact same models return good JSON objects. The Product Plan is
-  // small, so a concise explicit contract + normalizePlanCandidate is both faster
-  // and more robust than spending a request on a schema the provider may reject.
-  const jsonPrimary = await callGemini(`${system}${JSON_CONTRACT}`, user, {
-    jsonOnly: true,
-    thinking: THINKING.plan,
-    purpose: 'plan',
-  });
-  if (jsonPrimary.ok) {
-    const parsed = safeJsonParse<unknown>(jsonPrimary.text ?? '', null);
-    const plan = normalizePlanCandidate(parsed);
-    if (plan) return { ok: true, plan, mode: 'json' };
-    diagnostic = 'json_response_invalid';
-  } else {
-    diagnostic = jsonPrimary.error ?? 'json_request_failed';
-  }
+  const parsed = safeJsonParse<Partial<Plan> | null>(result.text ?? '', null);
+  if (!parsed?.kind) return { plan: FALLBACK, ok: false };
 
-  // Secondary path: enforced structured output. It is useful when a model emits
-  // a malformed object in JSON mode, but it is deliberately not the first paid
-  // request because provider schema regressions must not slow every user down.
-  const structured = await callGemini(system, user, {
-    jsonOnly: true,
-    thinking: THINKING.plan,
-    purpose: 'plan',
-    responseSchema: PLAN_SCHEMA,
-  });
-  if (structured.ok) {
-    const parsed = safeJsonParse<unknown>(structured.text ?? '', null);
-    const plan = normalizePlanCandidate(parsed);
-    if (plan) {
-      console.warn('[toolkin.plan] JSON planner failed; structured fallback succeeded');
-      return { ok: true, plan, mode: 'structured', diagnostic };
-    }
-    diagnostic = `${diagnostic}; structured_response_invalid`;
-  } else {
-    diagnostic = `${diagnostic}; ${structured.error ?? 'structured_request_failed'}`;
-  }
-
-  // Never make the mandatory feature-review screen a dead end because provider
-  // output formatting failed twice. The local plan is intentionally conservative;
-  // the normal generation/audit pipeline still enforces the reviewed feature.
-  console.error('[toolkin.plan] AI planning unavailable; using conservative local plan:', diagnostic.slice(0, 800));
-  return { ok: true, plan: createLocalPlan(request), mode: 'local', diagnostic };
+  return {
+    plan: correct({
+      kind: KINDS.includes(parsed.kind) ? parsed.kind : 'other',
+      title: String(parsed.title ?? ''),
+      capabilities: Array.isArray(parsed.capabilities) ? parsed.capabilities : [],
+      components: Array.isArray(parsed.components) ? parsed.components : [],
+      needsRecords: Boolean(parsed.needsRecords),
+      needsStructuredAi: Boolean(parsed.needsStructuredAi),
+      summary: String(parsed.summary ?? ''),
+      features: normalizeFeatures(parsed.features),
+    }),
+    ok: true,
+  };
 }

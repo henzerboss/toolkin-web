@@ -60,14 +60,13 @@ sudo apt update && sudo apt install -y postgresql
 sudo systemctl enable --now postgresql
 
 sudo -u postgres psql <<'SQL'
-CREATE USER toolkin WITH PASSWORD 'ПАРОЛЬ';
+CREATE USER toolkin WITH PASSWORD 'ПАРОЛЬ' CREATEDB;
 CREATE DATABASE toolkin OWNER toolkin;
 SQL
 ```
 
-Production-пользователю `CREATEDB` не нужен: миграции уже лежат в репозитории и
-применяются через `prisma migrate deploy`. Для локальной разработки с
-`prisma migrate dev` используйте отдельную dev-базу/роль.
+`CREATEDB` нужен, потому что `prisma migrate dev` создаёт временную теневую базу
+для проверки миграций. Без этого права команда падает.
 
 Postgres по умолчанию слушает только localhost — снаружи он недоступен, менять
 это не нужно.
@@ -102,7 +101,6 @@ npx prisma --version   # должно быть 6.x
 ```env
 DATABASE_URL=postgresql://toolkin:ПАРОЛЬ@localhost:5432/toolkin
 TOOLKIN_GEMINI_API_KEY=...
-TOOLKIN_PLAN_SECRET=...отдельный случайный секрет минимум 32 байта...
 TOOLKIN_CLIENT_TOKEN=...длинная случайная строка...
 TOOLKIN_REVENUECAT_WEBHOOK_SECRET=...ещё одна...
 ```
@@ -110,41 +108,19 @@ TOOLKIN_REVENUECAT_WEBHOOK_SECRET=...ещё одна...
 Спецсимволы в пароле (`@`, `:`, `/`, `#`) кодируйте процентами, иначе Prisma
 разберёт строку подключения неправильно.
 
-Секрет для подписи Product Plan сгенерируйте отдельно и не переиспользуйте как
-client token:
+## 6. Миграция и сборка
 
 ```bash
-openssl rand -hex 32
-```
-
-При ротации `TOOLKIN_PLAN_SECRET` незавершённые planToken, выданные до рестарта,
-станут недействительны; клиент автоматически вернётся к повторному planning.
-
-## 6. Проверки, сборка и миграция
-
-Миграции входят в архив. На production **не создавайте их командой
-`prisma migrate dev`**. Сначала убедитесь, что новый код собирается, и только
-потом применяйте уже проверенную миграцию:
-
-```bash
-set -euo pipefail
-npm test
-npm run typecheck
+npx prisma migrate dev --name init
 npm run build
-npx prisma migrate deploy
 ```
 
-`20260812090000_production_baseline` сделана idempotent: она подходит и для
-чистой базы, и для серверов, которые раньше были инициализированы локальным
-`migrate dev`. Следующая миграция `20260812143000_generation_jobs` добавляет
-`GenerationJob` для асинхронной генерации. Она не меняет баланс, Ledger или
-существующие спеки. При переходе со старой схемы существующие аккаунты не
-получают welcome-кредиты повторно; новые аккаунты по-прежнему обслуживаются
-текущей логикой `welcomeGranted`.
+При обновлении с предыдущей версии схема изменилась: поле `freeGenerationsLeft`
+заменено на `welcomeGranted`, потому что бесплатный тариф теперь измеряется
+кредитами, а не числом созданий. Миграция создаётся той же командой.
 
-Перед первой миграцией существующей production-базы всё равно сделайте backup.
-`npm run build` вызывает `prisma generate` перед Next.js build — Prisma Client
-не разъедется со схемой.
+`npm run build` вызывает `prisma generate` перед сборкой — клиент Prisma не
+разъедется со схемой.
 
 ## 7. PM2
 
@@ -209,27 +185,6 @@ curl -s "localhost:3010/api/app-version?platform=ios&version=1.0.0"
 и получается `umask 007export PATH=...`. Проверяйте `tail -3 ~/.bashrc`, а
 добавляйте через `printf '\n%s\n' 'строка' >> ~/.bashrc`.
 
-
-### Асинхронная генерация
-
-Создание приложения больше не держит HTTPS-запрос открытым до окончания Gemini.
-`POST /api/generate` возвращает `202 + jobId`, а мобильный клиент опрашивает
-`GET /api/generate/status?jobId=…`. Состояние лежит в Postgres, поэтому обычный
-mobile/nginx timeout не отменяет работу. Отдельный Redis/worker не нужен: при
-одном PM2 instance job запускается внутри постоянного Node-процесса. Если PM2
-перезапустился, stale job автоматически возвращается в очередь при следующем
-status-poll.
-
-Для диагностики очереди:
-
-```bash
-psql "$DATABASE_URL" -c 'select "status", "stage", count(*) from "GenerationJob" group by 1,2 order by 1,2;'
-psql "$DATABASE_URL" -c 'select "id", "status", "stage", "attempts", "error", "updatedAt" from "GenerationJob" order by "createdAt" desc limit 10;'
-```
-
-Status polling исключён из обычного IP rate limit: это дешёвое чтение по
-`jobId + X-App-User-Id`, иначе минутная генерация сама съедала бы часовой лимит.
-
 ## 8. Приложение
 
 Один домен обслуживает и лендинг, и API — отдельный `api.` поддомен на своём
@@ -273,40 +228,14 @@ npm run eval
 
 ## Обновления
 
-Обновляйте так, чтобы старый PM2-процесс продолжал обслуживать трафик, пока
-новый код проходит проверки. Миграция применяется только после успешной сборки:
+Всегда в этом порядке — иначе поймаете минуту с новым кодом на старой схеме:
 
 ```bash
-set -euo pipefail
-npm install --include=dev
-npm test
-npm run typecheck
-npm run build
-npx prisma migrate deploy
-pm2 restart toolkin --update-env
+npm install && npx prisma migrate deploy && npm run build && pm2 restart toolkin
 ```
 
-`set -euo pipefail` здесь принципиален: если `npm test`, typecheck или build упал,
-shell прекращает deployment и старый PM2-процесс продолжает работать. Не перезапускайте
-production после красного теста только потому, что следующая команда `next build` прошла.
-
-Если `.env` был создан из предыдущего архива, обновите latency-параметры вручную
-(замена `.env.example` существующий `.env` не меняет):
-
-```env
-TOOLKIN_THINKING_GENERATE=medium
-TOOLKIN_THINKING_VERIFY=low
-TOOLKIN_MODELS_VERIFY=gemini-3.5-flash-lite,gemini-3.5-flash
-TOOLKIN_MAX_OUTPUT_TOKENS_VERIFY=4096
-TOOLKIN_MAX_REPAIRS=2
-TOOLKIN_ATTEMPTS_PER_MODEL=1
-TOOLKIN_MAX_MODELS_PER_CALL=2
-TOOLKIN_AI_REQUEST_TIMEOUT_MS=90000
-```
-
-На сервере именно `migrate deploy`, а не `migrate dev`: он применяет только
-проверенные миграции из архива. Если build или тесты упали, до миграции и
-рестарта не доходите — текущая production-версия продолжит работать.
+На сервере именно `migrate deploy`, а не `migrate dev`: он только применяет уже
+созданные миграции и ничего не генерирует.
 
 ## Разработка в Expo Go
 
@@ -331,25 +260,19 @@ pm2 restart toolkin
 ## Проверка конфигурации
 
 ```bash
-curl -s -H "X-Client-Token: $TOOLKIN_CLIENT_TOKEN" https://toolkin.app/api/health | python3 -m json.tool
+curl -s https://toolkin.app/api/health | python3 -m json.tool
 ```
 
-Роут получает список доступных моделей и делает **один** маленький настоящий
-planner probe через тот же Gemini Interactions JSON-object transport, который используется
-основным Product Plan path. Он не генерирует тестовые приложения и не пингует каждую
-модель отдельным платным запросом. Перед переключением трафика должны быть
-`aiJsonTransport: "interactions"`, `generationTransport: "durable-job-polling"`,
-`featureVerification: "reachable-graph+runtime-aware-criterion-audit"`, `plannerMode: "interactions-json-primary"`,
-`generationJobsReady: true`, `planWorking: true`, `plannerProbe.ok: true` и
-`productionConfigOk: true`. `working`/`suggestions` показывают, какие модели
-видит именно ваш ключ. `productionConfigOk` в production подтверждает наличие
-`DATABASE_URL`, `TOOLKIN_CLIENT_TOKEN`, отдельного `TOOLKIN_PLAN_SECRET` и
-`TOOLKIN_REVENUECAT_WEBHOOK_SECRET`.
+Роут делает настоящий вызов каждой модели из `TOOLKIN_MODELS` и показывает,
+какие отвечают. Пустой `working` — генерация работать не будет, смотрите
+`suggestions`: там имена моделей, которые ключ реально видит.
 
-Доступность и имена Gemini-моделей меняются, поэтому `/api/health` считается
-источником истины именно для вашего production-ключа. Не привязывайте deploy к
-историческим датам снятия моделей: обновляйте каскад через переменные окружения,
-не меняя код приложения.
+Это не теоретическая проверка. Google снимает модели с обслуживания раньше
+объявленных дат и блокирует старые имена для новых ключей — `gemini-2.5-flash`
+и `gemini-2.5-flash-lite` начали отдавать 404 в июле 2026 при заявленном
+отключении в октябре. Симптом со стороны приложения: «что-то пошло не так»,
+со стороны Google AI Studio: график Total API Errors с 404 NotFound и нулевые
+output-токены при ненулевых input.
 
 ## Если не работает
 

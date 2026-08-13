@@ -17,19 +17,6 @@ const list = (value: JsonValue): number[] =>
 
 const DAY_MS = 86_400_000;
 
-const objects = (value: JsonValue): Record<string, JsonValue>[] =>
-  Array.isArray(value)
-    ? value.filter((item): item is Record<string, JsonValue> => Boolean(item) && typeof item === 'object' && !Array.isArray(item))
-    : [];
-
-const recordsIn = (value: JsonValue, collection: JsonValue): Record<string, JsonValue>[] => {
-  const name = String(collection ?? '');
-  return objects(value).filter((item) => String(item.collection ?? '') === name);
-};
-
-const fieldValue = (item: Record<string, JsonValue>, key: JsonValue): JsonValue =>
-  item[String(key ?? '')] ?? null;
-
 /**
  * Единственный источник функций для выражений. Модель получает этот список
  * в системном промпте, парсер отвергает всё остальное.
@@ -87,36 +74,6 @@ export const FUNCTIONS: Record<string, Fn> = {
   /** Компоненты длительности в секундах — для таймеров. */
   minutesOf: (a) => Math.floor(num(a[0]) / 60),
   secondsOf: (a) => Math.floor(num(a[0]) % 60),
-
-  /** Aggregates over the safe flattened `records` builtin.
-   * Signatures: fn(records, collection, field, ...).
-   */
-  valuesBy: (a) => recordsIn(a[0], a[1]).map((item) => fieldValue(item, a[2])),
-  sumBy: (a) => recordsIn(a[0], a[1]).reduce((sum, item) => sum + num(fieldValue(item, a[2])), 0),
-  avgBy: (a) => {
-    const values = recordsIn(a[0], a[1]).map((item) => num(fieldValue(item, a[2])));
-    return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
-  },
-  countBy: (a) => recordsIn(a[0], a[1]).length,
-  sumWhere: (a) => recordsIn(a[0], a[1])
-    .filter((item) => fieldValue(item, a[3]) === (a[4] ?? null))
-    .reduce((sum, item) => sum + num(fieldValue(item, a[2])), 0),
-  countWhere: (a) => recordsIn(a[0], a[1])
-    .filter((item) => fieldValue(item, a[2]) === (a[3] ?? null)).length,
-  uniqueBy: (a) => {
-    const out: JsonValue[] = [];
-    for (const item of recordsIn(a[0], a[1])) {
-      const value = fieldValue(item, a[2]);
-      if (!out.some((seen) => seen === value)) out.push(value);
-    }
-    return out;
-  },
-  latestBy: (a) => {
-    const rows = recordsIn(a[0], a[1]);
-    if (!rows.length) return null;
-    const latest = [...rows].sort((x, y) => num(y.createdAt ?? 0) - num(x.createdAt ?? 0))[0];
-    return fieldValue(latest, a[2]);
-  },
 };
 
 export const FUNCTION_NAMES = Object.keys(FUNCTIONS);

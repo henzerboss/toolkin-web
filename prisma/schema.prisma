@@ -20,7 +20,6 @@ model Account {
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
   entries             Ledger[]
-  generationJobs      GenerationJob[]
 
   @@index([premiumUntil])
 }
@@ -54,33 +53,4 @@ model SpecCache {
   usedAt    DateTime @updatedAt
 
   @@index([usedAt])
-}
-
-
-/// Durable asynchronous app-generation task. The mobile client creates a job
-/// and polls its status instead of keeping one HTTP request open for minutes.
-model GenerationJob {
-  id             String   @id @default(cuid())
-  accountId      String
-  account        Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  status         String   @default("pending") // pending | running | completed | failed
-  stage          String   @default("queued")  // queued | building | validating | repairing | finalizing | done
-  prompt         String
-  locale         String
-  features       String   @default("[]") // JSON
-  customFeatures String   @default("[]") // JSON
-  planToken      String
-  price          Int
-  attempts       Int      @default(0)
-  resultSpec     String?  // JSON
-  resultMeta     String?  // JSON
-  error          String?
-  errorDetail    String?
-  lockedAt       DateTime?
-  completedAt    DateTime?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-
-  @@index([accountId, createdAt])
-  @@index([status, createdAt])
 }

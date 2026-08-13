@@ -6,13 +6,26 @@ export type JsonValue =
   | JsonValue[]
   | { [key: string]: JsonValue };
 
+/** Выражение вида `bill * (1 + tipPct / 100)`. Вычисляется ExpressionEvaluator. */
 export type Expression = string;
+
+/** Строка, которая может содержать подстановки: `С человека: {{perPerson | money}}`. */
 export type Template = string;
 
 export type Capability =
-  | 'clipboard' | 'haptics' | 'share' | 'notifications'
-  | 'camera' | 'scanner' | 'sensors' | 'location' | 'files' | 'network'
-  | 'llm' | 'image' | 'sandbox';
+  | 'clipboard'
+  | 'haptics'
+  | 'share'
+  | 'notifications'
+  | 'camera'
+  | 'scanner'
+  | 'sensors'
+  | 'location'
+  | 'files'
+  | 'network'
+  | 'llm'
+  | 'image'
+  | 'sandbox';
 
 export interface ActionStep {
   action: string;
@@ -28,47 +41,13 @@ export interface UiNode {
 export interface RecordField {
   key: string;
   label: Template;
-  kind: 'number' | 'text' | 'date' | 'image' | 'boolean';
+  kind: 'number' | 'text' | 'date' | 'image';
 }
 
 export interface RecordSchema {
   fields: RecordField[];
+  /** Поле, по которому строится график и агрегаты. */
   valueField?: string;
-}
-
-export interface CustomComponentProp {
-  name: string;
-  /** value = typed prop; text = semantic text; bind = state-key reference. */
-  kind: 'value' | 'text' | 'bind';
-  required?: boolean;
-  default?: JsonValue;
-}
-
-/** Safe app-specific component composed only from the declarative DSL. */
-export interface CustomComponentSpec {
-  description?: string;
-  props?: CustomComponentProp[];
-  template: UiNode;
-}
-
-export interface NavigationSpec {
-  start: string;
-  mode: 'single' | 'stack' | 'tabs';
-  titles?: Record<string, string>;
-  tabs?: { screen: string; label: string; icon?: string }[];
-}
-
-export interface DesignSpec {
-  density?: 'compact' | 'comfortable';
-  cardStyle?: 'soft' | 'outlined' | 'flat';
-  radius?: 'soft' | 'round';
-}
-
-export interface FeatureEvidence {
-  screens?: string[];
-  components?: string[];
-  actions?: string[];
-  capabilities?: Capability[];
 }
 
 export interface MiniAppManifest {
@@ -80,50 +59,40 @@ export interface MiniAppManifest {
 
 export type AccentName = 'blue' | 'green' | 'amber' | 'violet' | 'rose' | 'teal';
 
-/**
- * Toolkin generated-app contract.
- *
- * There is intentionally one format only: schemaVersion 2. The product has not
- * shipped a previous public runtime, so carrying v1 branches would add failure
- * modes without protecting real user data.
- */
 export interface MiniAppSpec {
-  schemaVersion: 2;
+  schemaVersion: 1;
   id: string;
   version: number;
   manifest: MiniAppManifest;
   capabilities: Capability[];
+  /** Начальное состояние. Ключи доступны в выражениях по имени. */
   state: Record<string, JsonValue>;
+  /** Поля, которые переживают закрытие утилиты. */
   persist?: string[];
+  /** Вычисляемые значения. Пересчитываются при каждом изменении state. */
   derived?: Record<string, Expression>;
-  /** Every persistent record set is explicitly named. */
-  collections?: Record<string, RecordSchema>;
-  /** One to four screen roots. */
-  screens: Record<string, UiNode>;
-  navigation: NavigationSpec;
-  /** App-local declarative composite components. Never native source code. */
-  components?: Record<string, CustomComponentSpec>;
-  design?: DesignSpec;
-  /** Traceability from selected Product Plan features to concrete implementation. */
-  featureEvidence?: Record<string, FeatureEvidence>;
+  records?: RecordSchema;
+  ui: UiNode;
 }
 
 export interface StoredRecord {
   id: string;
   createdAt: number;
-  collection: string;
   values: Record<string, JsonValue>;
 }
 
-export function getScreenRoots(spec: MiniAppSpec): Record<string, UiNode> {
-  return spec.screens;
-}
+/**
+ * Дочерние узлы с учётом вкладок. Отдельная функция, потому что забыть про
+ * tabs в одном из мест обхода — значит перестать видеть половину утилиты:
+ * валидатор пропустит ошибки, прогон не нажмёт кнопки, проверка фич не
+ * найдёт компонентов.
+ */
+export function childrenOf(node: UiNode): UiNode[] {
+  const children = Array.isArray(node.children) ? node.children : [];
+  if (!Array.isArray(node.tabs)) return children;
 
-export function getStartScreen(spec: MiniAppSpec): string {
-  if (spec.navigation.start && spec.screens[spec.navigation.start]) return spec.navigation.start;
-  return Object.keys(spec.screens)[0] ?? 'home';
-}
-
-export function getCollectionSchema(spec: MiniAppSpec, collection: string): RecordSchema | undefined {
-  return spec.collections?.[collection];
+  const fromTabs = (node.tabs as unknown as { children?: UiNode[] }[]).flatMap(
+    (tab) => (Array.isArray(tab?.children) ? tab.children : []),
+  );
+  return [...children, ...fromTabs];
 }

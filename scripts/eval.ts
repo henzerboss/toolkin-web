@@ -19,7 +19,6 @@ import { callGemini, safeJsonParse, type ThinkingLevel } from '../src/app/api/_s
 import { planApp } from '../src/app/api/_plan';
 import { validateSpec } from '../src/lib/validateSpec';
 import { autofix } from '../src/lib/autofix';
-import { normalizeGeneratedSpec } from '../src/lib/normalizeGeneratedSpec';
 import { smokeTest } from '../src/lib/smokeTest';
 
 interface Case {
@@ -33,10 +32,8 @@ const hasCapability = (name: string) => (spec: Record<string, unknown>) =>
     ? null
     : `ожидалась capability "${name}"`;
 
-const hasComponent = (type: string) => (spec: Record<string, unknown>) => {
-  const implementation = JSON.stringify({ screens: spec.screens, components: spec.components });
-  return implementation.includes(`"${type}"`) ? null : `ожидался компонент ${type}`;
-};
+const hasComponent = (type: string) => (spec: Record<string, unknown>) =>
+  JSON.stringify(spec.ui).includes(`"${type}"`) ? null : `ожидался компонент ${type}`;
 
 const both = (...checks: ((spec: Record<string, unknown>) => string | null)[]) =>
   (spec: Record<string, unknown>) => checks.map((check) => check(spec)).filter(Boolean).join('; ') || null;
@@ -113,13 +110,11 @@ async function runCase(item: Case, thinking: ThinkingLevel, maxRepairs: number):
     }
 
     const parsed = safeJsonParse<Record<string, unknown> | null>(result.text ?? '', null);
-    const normalized = parsed ? normalizeGeneratedSpec(parsed) : null;
-    const preFixed = normalized ? autofix(normalized.spec as never) : null;
-    const validation = preFixed ? validateSpec(preFixed.spec) : { ok: false as const, errors: ['ответ не является JSON'] };
+    const validation = parsed ? validateSpec(parsed) : { ok: false as const, errors: ['ответ не является JSON'] };
 
     if (validation.ok) {
-      // Same canonicalization order as production: normalize -> autofix -> strict validate.
-      const fixed = { spec: validation.spec, applied: preFixed?.applied ?? [] };
+      // Тот же порядок, что в проде: механическая починка, потом прогон.
+      const fixed = autofix(validation.spec);
       const smoke = smokeTest(fixed.spec);
 
       if (smoke.ok) {
@@ -136,7 +131,7 @@ async function runCase(item: Case, thinking: ThinkingLevel, maxRepairs: number):
     }
 
     if (round === 0) firstErrors = validation.errors;
-    prompt = buildRepairPrompt(JSON.stringify(preFixed?.spec ?? parsed ?? {}), validation.errors);
+    prompt = buildRepairPrompt(JSON.stringify(parsed ?? {}), validation.errors);
   }
 
   return {

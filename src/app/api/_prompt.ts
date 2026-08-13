@@ -55,18 +55,13 @@ const PLAYBOOK: Record<string, string[]> = {
   ],
 
   records: [
-    'Persistent history always uses an explicitly named collection. Never use an undeclared or implicit/default collection:',
-    '  "collections": { "drinks": { "fields": [{ "key": "amount", "label": "Amount", "kind": "number" }], "valueField": "amount" } },',
-    'Collection fields MUST be an array of {key,label,kind}; never emit fields as an object/map. kind is exactly number | text | date | image | boolean.',
-    '  "derived": { "total": "sumBy(records, \"drinks\", \"amount\")" },',
-    '  button: { "action": "records.add", "collection": "drinks", "values": { "amount": "{{portion}}" } }',
-    'Every records.add/update/clear must include a literal collection name declared in collections.',
-    'Every List/Table/Gallery/PieChart that reads records also names its collection. Repeat with source=records must name collection too.',
-    'Runtime record semantics are important: records.add prepends newest records; List/Table/Gallery and Repeat(source=records) preserve newest-first order automatically.',
-    'Core List already renders a per-row delete button that removes the record by id. If the feature only needs newest-first history + deletion, prefer List and do NOT add a redundant records.remove control.',
-    'If you use Repeat/custom cards instead of core List, deletion is NOT implicit: add a visible reachable records.remove action using the repeated record id.',
-    'Derived aggregates such as sumBy(records, ...) and progress expressions are reactive after records.add/update/remove; no separate refresh action is needed.',
-    'Use Repeat + app-specific cards when that makes the UX better than a generic List. Use Table only for two or three short columns.',
+    'Record history. The records.add action works only together with a records block:',
+    '  "records": { "fields": [{ "key": "amount", "label": "Amount", "kind": "number" }], "valueField": "amount" },',
+    '  "derived": { "total": "sum(recordValues)" },',
+    '  button: { "action": "records.add", "values": { "amount": "{{portion}}" } }',
+    'Without the records block entries vanish on close and recordValues stays empty.',
+    'Default to List for showing history — it is readable on a narrow screen.',
+    'Use Table only for two or three short numeric columns; four columns do not fit a phone.',
   ],
 
   countdown: [
@@ -138,11 +133,13 @@ const PLAYBOOK: Record<string, string[]> = {
     '  show the frame: { "type": "Image", "source": "photo", "ratio": "square" }',
     '  { "action": "llm.ask", "prompt": "Estimate the calories.", "image": "photo", "fields": {...} }',
     '',
-    'Photos in history. Put the photo and analysis into one explicitly named collection and display it as an image:',
-    '  "collections": { "meals": { "fields": [{ "key": "photo", "label": "Photo", "kind": "image" },',
-    '                          { "key": "kcal", "label": "Kcal", "kind": "number" }], "valueField": "kcal" } },',
-    '  { "action": "records.add", "collection": "meals", "values": { "photo": "{{photo}}", "kcal": "{{kcal}}" } }',
-    '  { "type": "Gallery", "collection": "meals", "imageKey": "photo", "columns": 3 }',
+    'Photos in history. The photo field must go into records together with the rest,',
+    'and be displayed by Gallery or as a List thumbnail — otherwise a file path is',
+    'printed instead of the picture:',
+    '  "records": { "fields": [{ "key": "photo", "label": "Photo", "kind": "image" },',
+    '                          { "key": "kcal", "label": "Kcal", "kind": "number" }], "valueField": "kcal" },',
+    '  { "action": "records.add", "values": { "photo": "{{photo}}", "kcal": "{{kcal}}" } }',
+    '  { "type": "Gallery", "imageKey": "photo", "columns": 3 }',
   ],
 
   image: [
@@ -157,11 +154,11 @@ const PLAYBOOK: Record<string, string[]> = {
 
   charts: [
     'Charts are chosen by the task, not by taste:',
-    '  Chart      — bars from an explicit array expression, e.g. valuesBy(records, "weights", "value")',
-    '  LineChart  — change over time from an explicit array expression',
-    '  PieChart   — split a named collection: { "collection": "expenses", "groupBy": "category", "valueKey": "amount" }',
-    '  Calendar   — month grid; when showing record dots include collection + dateKey, while computed marks need no collection.',
-    'Record-backed visualizations stay empty unless the named collection and fields are declared correctly.',
+    '  Chart      — bars over recent entries, values: "recordValues"',
+    '  LineChart  — change over time (weight, steps, temperature)',
+    '  PieChart   — split by category: { "groupBy": "category", "valueKey": "amount" }',
+    '  Calendar   — month grid with marks: { "bind": "selectedDate", "dateKey": "date" }',
+    'All of them read the record history, so they stay empty without a records block.',
   ],
 
   game: [
@@ -172,7 +169,7 @@ const PLAYBOOK: Record<string, string[]> = {
     'the sandbox has no network. Use the CSS variables --bg, --surface, --text, --accent',
     'so the game matches the app theme. Handle touch, not mouse: touchstart and touchmove.',
     'Bridges available inside (all return promises):',
-    '  toolkin.save({score: 12}, "scores") append an entry to a declared named collection',
+    '  toolkin.save({score: 12})        append an entry to the record history',
     '  toolkin.set("best", 12)          write a state key',
     '  toolkin.get("best")              read a state key or derived value',
     '  toolkin.ask(prompt, fields)      ask the model, spends credits, needs the llm capability',
@@ -197,10 +194,7 @@ interface PromptPlan {
   needsStructuredAi: boolean;
   summary: string;
   title: string;
-  navigation?: 'single' | 'stack' | 'tabs';
-  screens?: { id: string; title: string; purpose: string }[];
-  customComponents?: { name: string; purpose: string; strategy: 'compose' | 'extend' }[];
-  features?: { id: string; title: string; description: string; acceptanceCriteria?: string[] }[];
+  features?: { id: string; title: string; description: string }[];
 }
 
 /** Какие разделы нужны этому плану. Без плана берутся все. */
@@ -228,101 +222,91 @@ export function buildSystemInstruction(locale: string, plan?: PromptPlan): strin
   const sections = sectionsFor(plan);
 
   const lines = [
-    'You are a senior mobile product designer and declarative app builder.',
-    'You do NOT write React Native or native code. Return ONE JSON object executed by a safe runtime.',
+    'You build small single-screen utilities for a mobile app.',
+    'You do NOT write code. You return ONE JSON object — a declarative spec executed by a runtime.',
     'Reply with raw JSON only: no markdown, no backticks, no explanations.',
     '',
-    `LANGUAGE: write every user-facing label, title, button caption, empty state and hint in ${lang} (locale ${locale}).`,
-    'State, derived, collection, screen and prop keys stay in latin camelCase/kebab-case where appropriate.',
+    `LANGUAGE: write every label, title, button caption and hint in ${lang} (locale ${locale}).`,
+    'Keys of state and derived stay in latin camelCase.',
     'The examples below use English labels — copy their structure, not their language.',
     '',
-    'V2 SPEC SHAPE (generators MUST emit schemaVersion 2):',
+    'SPEC SHAPE:',
     '{',
-    '  "schemaVersion": 2,',
-    '  "id": "kebab-case-id", "version": 1,',
+    '  "schemaVersion": 1,',
+    '  "id": "kebab-case-id",',
+    '  "version": 1,',
     `  "manifest": { "name": "short name, max 24 chars", "icon": "icon name", "color": "blue|green|amber|violet|rose|teal", "locale": "${locale}" },`,
-    '  "capabilities": [],',
+    '  "capabilities": [...],',
     '  "state": { "key": initialValue },',
-    '  "persist": ["state keys that survive closing the app"],',
+    '  "persist": ["keys that survive closing the app"],',
     '  "derived": { "name": "expression" },',
-    '  "collections": { "expenses": { "fields": [...], "valueField": "amount" } },',
-    '  "components": { "ExpenseCard": { "description": "...", "props": [...], "template": {...} } },',
-    '  "screens": { "home": { "type": "Screen", "children": [...] }, "history": {...} },',
-    '  "navigation": { "start": "home", "mode": "single|stack|tabs", "titles": {...}, "tabs": [...] },',
-    '  "design": { "density": "compact|comfortable", "cardStyle": "soft|outlined|flat", "radius": "soft|round" },',
+    '  "records": { "fields": [{"key","label","kind"}], "valueField": "key" },',
+    '  "ui": { "type": "Screen", "children": [...] }',
     '}',
     '',
-    'CORE COMPONENTS:',
+    'COMPONENTS (nothing else exists):',
     describeComponents(),
-    '',
-    'SAFE APP-SPECIFIC COMPONENTS:',
-    '- If ideal UX needs a control that core components do not express well, define an app-local PascalCase component in spec.components.',
-    '- A custom component is DECLARATIVE ONLY. It is composed from core/custom components; never put React/React Native source in it.',
-    '- CUSTOM COMPONENT SHAPE IS EXACT: {"description":"...","props":[{"name":"amount","kind":"value","required":true}],"template":{"type":"Card",...}}.',
-    '- props MUST be an array, never an object/map. Each prop.kind is exactly value | text | bind. Do not use type:number/string/state there.',
-    '- template MUST be one UiNode object and template.type MUST be a plain component-name string. There is no extends/component/widget/type-object syntax in RuntimeSpec.',
-    '- Planner strategy "extend" means compose/configure a core component inside template; it does NOT create an extends field in AppSpec.',
-    '- Use component props inside its template as {{propName}}. A bind prop may be used as "bind":"{{bindKey}}" and action key:"{{bindKey}}".',
-    '- Instantiate it as {"type":"ExpenseCard","props":{"id":"{{expenseId}}","amount":"{{expenseAmount}}"}}.',
-    '- Prefer REUSE core -> COMPOSE custom -> EXTEND via a custom wrapper. Use Sandbox only for a genuine canvas/gesture capability gap.',
-    '- Do not redefine generic Text/Button/Card just to change styling; the design system owns consistency.',
-    '',
-    'REPEAT / RECORD-DRIVEN UI:',
-    '- Repeat source is an ARRAY EXPRESSION, not a template: {"type":"Repeat","source":"records","collection":"expenses","as":"expense","children":[...]}',
-    '- Each stored record exposes expense, expenseIndex and flattened locals such as expenseId, expenseCreatedAt, expenseCollection AND each domain field from values, e.g. expenseAmount and expenseCategory.',
-    '- This flattening exists because dot notation is intentionally unsupported. Use those locals in repeated custom cards and records.update/remove actions.',
-    '- Keep repeated custom controls simple and cap Repeat with limit when history can grow.',
-    '- COLLECTION INVARIANT: every collection name used by an action or record-backed component must exist in spec.collections. Never invent names like log/history without declaring their fields.',
     '',
     'ACTIONS (onPress is an array of steps, executed in order):',
     describeActions(),
     '',
-    'NAVIGATION:',
-    '- nav.go screen must name an existing spec.screens key. nav.back works for stack flow; nav.home returns to navigation.start.',
-    '- tabs are only for 2-4 peer destinations. Add/edit/detail screens should normally use nav.go from a stack flow, not tabs.',
-    '',
     'EXPRESSIONS:',
     'Arithmetic, comparisons, && || !, ternary a ? b : c, literals.',
     `Functions: ${FUNCTION_NAMES.join(', ')}. No other functions exist.`,
-    'Aggregate signatures are exact:',
-    '  valuesBy(records, "expenses", "amount")',
-    '  sumBy(records, "expenses", "amount")',
-    '  avgBy(records, "expenses", "amount")',
-    '  countBy(records, "expenses")',
-    '  sumWhere(records, "expenses", "amount", "category", "Food")',
-    '  countWhere(records, "expenses", "category", "Food")',
-    '  uniqueBy(records, "expenses", "category")',
-    '  latestBy(records, "expenses", "amount")',
-    'You may reference state keys, derived names, custom-component locals and these built-ins:',
+    'You may reference only state keys, derived names and these built-ins:',
     BUILTIN_SCOPE.join(', ') + '.',
-    'Dot notation and index access are NOT supported. Use the provided aggregate functions or flattened locals.',
+    'Dot notation and index access are NOT supported.',
     '',
     'TEMPLATES AND FORMATTING:',
-    'Text/action properties support {{expression | filter}} substitution.',
+    'Text properties support {{expression | filter}} substitution.',
     `Filters: ${FILTER_NAMES.join(', ')}.`,
-    'NEVER manually format numbers. Money, percentages, dates and durations go through filters.',
-    'Use visible:"condition" for conditional UI. Design explicit empty states for persistent lists.',
+    'NEVER format numbers yourself. Money, percentages, dates and durations go through a filter,',
+    'otherwise the screen shows 880.0000000000001 and the currency will not match the device.',
+    'Hide a block until data is ready: "visible": "bill > 0" on any node.',
     '',
   ];
 
-  for (const section of sections) lines.push(...PLAYBOOK[section], '');
+  for (const section of sections) {
+    lines.push(...PLAYBOOK[section], '');
+  }
 
   lines.push(
-    'PRODUCT / UX QUALITY RULES:',
-    '1. Implement the Product Plan outcomes, not merely its component names. Every selected feature must satisfy its acceptance criteria.',
-    '2. Start from the ideal mobile flow. Do not cram unrelated tasks into one screen just because a core component exists.',
-    '3. Use 1-4 screens. A simple calculator should stay one screen; trackers may use Home/Add/History/Settings when that materially improves use.',
-    '4. Preserve a clear hierarchy: one obvious primary action per task, secondary actions quieter, related controls grouped in Card/Section/Stack.',
-    '5. Use sensible initial values and explicit empty/error/loading states. A fresh install must be understandable before any data exists.',
-    '6. Mobile UX is enforced: every input/toggle/select/date control has a short label; Select uses 2-12 unique short options; Row with more than 3 children must wrap; Table has at most 3 short columns. Use Grid/Stack/Card instead of dense horizontal UI.',
-    '7. Declare only capabilities actually used. Extra permissions are validation failures.',
-    '8. Every bind must resolve to a state key (directly or through a custom bind prop). Select initial value must match an option.',
-    '9. Put one-time settings/preferences in persist; put user-created history only in explicitly named collections, not ad-hoc state arrays.',
-    '10. The backend audits selected features against the reachable app and writes featureEvidence itself. Do not fake or optimize for featureEvidence; implement the real end-to-end behavior.',
-    '11. Never invent unsupported functions/actions/components. If core UX is insufficient, build a safe declarative custom component instead.',
-    '12. If a task needs copy/share, add it only when it genuinely helps; do not add decorative features just to fill a screen.',
-    '13. Before returning JSON, mentally trace every selected feature from navigation.start: the user must be able to reach the control, trigger the action, and see/store the result. Definitions or orphan screens do not count.',
-    '14. Never leave a planned custom component unused. If it is not instantiated by a reachable screen, remove it or instantiate it with real props and behavior.',
+    'SCREEN DESIGN. A vertical stack of identical cards reads as a dump, not as an app.',
+    'Give the screen a shape:',
+    '',
+    '  Tabs when the utility has more than one job. Three tabs at most, named by what',
+    '  the person does there — "Today / History / Settings", not "Tab 1 / Tab 2".',
+    '  State is shared, so a value entered on one tab is visible on another.',
+    '    { "type": "Tabs", "tabs": [',
+    '      { "label": "Today",   "children": [ … ] },',
+    '      { "label": "History", "children": [ … ] } ] }',
+    '',
+    '  Section to group related inputs under a heading — settings that are adjusted once',
+    '  belong in their own section, away from the daily controls.',
+    '',
+    '  EmptyState next to every history block, hidden once data appears:',
+    '    { "type": "EmptyState", "title": "No entries yet", "hint": "Tap Add to log the first one",',
+    '      "visible": "recordCount == 0" }',
+    '    { "type": "List", "valueKey": "amount", "visible": "recordCount > 0" }',
+    '  Without it the screen looks broken on the very first launch — which is exactly',
+    '  the moment the person decides whether to keep the app.',
+    '',
+    '  KeyValue for secondary numbers. Three Stat blocks in a row means no accent at all;',
+    '  one Stat plus two KeyValue rows means a clear hierarchy.',
+    '',
+    'QUALITY RULES:',
+    '1. Exactly one Stat or ProgressRing per screen or per tab — the main result.',
+    '2. Declare only the capabilities you actually use in actions. An extra permission is a rejection.',
+    '3. Every bind must exist in state. A Select initial value must match one of options.value.',
+    '4. The utility must be useful the moment it opens: put sensible defaults, not zeros everywhere.',
+    '5. Without tabs keep it to 4–8 blocks; with tabs up to 6 per tab. Depth beats length:',
+    '   a person scrolling past ten cards has already lost the main number.',
+    '6. Put settings the person adjusts once (goal, portion size, units) into persist.',
+    '7. If the result is worth copying or sending, add a clipboard.set or share button.',
+    '8. One primary button per screen. Everything else is secondary — two blue buttons',
+    '   side by side means the person has to read both to know which one to press.',
+    '9. Anything the person adjusts once (goal, cycle length, units) goes into a Settings',
+    '   tab or a Section at the bottom, never above the daily controls.',
   );
 
   return lines.join('\n');
@@ -339,49 +323,32 @@ export function buildGeneratePrompt(prompt: string, locale: string, plan?: Promp
   if (plan) {
     lines.push(
       '',
-      'IMMUTABLE PRODUCT PLAN. This is the exact plan the person reviewed; do not reinterpret or replace it:',
+      'The plan is already decided. Follow it exactly:',
       `  kind: ${plan.kind}`,
       `  title: ${plan.title}`,
+      `  capabilities: ${plan.capabilities.join(', ') || '(none)'}`,
+      `  components to use: ${plan.components.join(', ')}`,
+      `  record history: ${plan.needsRecords ? 'yes' : 'no'}`,
+      `  structured model answer: ${plan.needsStructuredAi ? 'yes — use llm.ask with fields' : 'no'}`,
       `  summary: ${plan.summary}`,
-      `  navigation: ${plan.navigation ?? 'single'}`,
-      `  known minimum capabilities from planned selected outcomes: ${plan.capabilities.join(', ') || '(none)'}`,
-      `  likely core building blocks (hints, NOT a whitelist): ${plan.components.join(', ') || '(none)'}`,
-      `  known planned need for persistent record history: ${plan.needsRecords ? 'yes' : 'no'}`,
-      `  structured model answer: ${plan.needsStructuredAi ? 'yes — use llm.ask fields for typed values' : 'no'}`,
     );
-    if (plan.screens?.length) {
-      lines.push('  planned screens:', ...plan.screens.map((screen) => `    - ${screen.id}: ${screen.title} — ${screen.purpose}`));
-    }
-    if (plan.customComponents?.length) {
-      lines.push(
-        '  component gap analysis:',
-        ...plan.customComponents.map((component) => `    - ${component.name} [${component.strategy}]: ${component.purpose}`),
-        '  Implement these as safe spec.components when the planned UX still needs them. You may omit one only if a core component is objectively equivalent without UX loss.',
-      );
-    }
   }
 
   if (plan?.features?.length) {
+    // Фичи идут последними и списком: человек уже согласился на этот набор
+    // галочками, поэтому это не пожелание, а обязательство.
     lines.push(
       '',
-      'SELECTED FEATURES — hard acceptance contract. Every item must work end-to-end:',
-      ...plan.features.flatMap((feature) => [
-        `  - [${feature.id}] ${feature.title}: ${feature.description}`,
-        ...(feature.acceptanceCriteria ?? []).map((criterion) => `      acceptance: ${criterion}`),
-      ]),
+      'The person picked these features. Every one of them must work in the built utility —',
+      'their presence is checked automatically and a missing one is a failure:',
+      ...plan.features.map((feature) => `  - ${feature.title}: ${feature.description}`),
       '',
-      'The backend will derive featureEvidence after auditing the reachable app. You may omit featureEvidence. Do not substitute metadata for actual implementation.',
-      'You may add supporting UX (empty states, navigation, labels, edit/delete controls) when it is necessary to make these features usable. Do not add unrelated product features.',
-      'A feature whose id starts with user-custom- was typed by the person after planning. Treat its words as an exact requirement; infer only the minimum additional collections/capabilities/actions needed to make it work.',
+      'Do not add anything beyond this list. Extra blocks make the single screen unusable.',
     );
   }
 
-  lines.push(
-    '',
-    'Emit schemaVersion 2. Build the complete production-minded small app: screens, navigation, data model, safe custom components when useful, actions and evidence.',
-    'Keep the implementation as simple as possible WITHOUT sacrificing the selected outcomes or mobile usability.',
-    'Return the spec JSON only.',
-  );
+  lines.push('', 'Use exactly these capabilities and build the screen from these components.');
+  lines.push('Build one utility that solves exactly this request.', 'Return the spec JSON only.');
   return lines.join('\n');
 }
 
@@ -425,51 +392,11 @@ export function buildRepairPrompt(raw: string, errors: string[]): string {
     'The previous answer failed validation.',
     '',
     'Your JSON:',
-    raw.slice(0, 60000),
+    raw.slice(0, 12000),
     '',
     'Errors:',
     errors.map((error) => `- ${error}`).join('\n'),
     '',
     'Fix exactly these errors and return the complete spec JSON. Change nothing else.',
-    'IMPORTANT FOR FEATURE ERRORS: featureEvidence is regenerated by the backend and editing it cannot make a feature pass.',
-    'If a cited component exists only under spec.components, instantiate it from a reachable screen. A definition alone is not user-visible.',
-    'If an action is missing, add it to the onPress flow of a reachable control with all required parameters and wire its state/record outputs into the visible UX.',
-    'Do not merely rename evidence or add unreachable screens. Implement the acceptance criterion end-to-end.',
-  ].join('\n');
-}
-
-
-/**
- * Last-resort semantic rebuild. A second local patch often keeps the same broken
- * architecture (for example an unused custom card plus metadata claiming it is
- * used). On the final repair budget we let the model simplify/recompose the app
- * while keeping the immutable Product Plan and acceptance outcomes.
- */
-export function buildRecoveryPrompt(originalBuildPrompt: string, raw: string, errors: string[]): string {
-  return [
-    'The current implementation is still incomplete after a targeted repair.',
-    'Rebuild the SMALLEST complete RuntimeSpec that satisfies the immutable selected features. You may simplify or replace the broken UI structure.',
-    '',
-    'ORIGINAL REVIEWED BUILD REQUEST:',
-    originalBuildPrompt.slice(0, 24000),
-    '',
-    'CURRENT SPEC (reuse working state/collections when useful, but do not preserve broken architecture):',
-    raw.slice(0, 60000),
-    '',
-    'OUTSTANDING ERRORS / ACCEPTANCE GAPS:',
-    errors.map((error) => `- ${error}`).join('\n'),
-    '',
-    'Rules for this recovery build:',
-    '- Every selected feature must have a real reachable user path starting from navigation.start or a visible tab.',
-    '- A custom component definition is useless unless a reachable screen instantiates it.',
-    '- Device/AI/record actions must live in reachable onPress flows with required parameters and visible outputs.',
-    '- Prefer runtime-guaranteed primitives when they directly satisfy a missing outcome: core List is newest-first and includes per-row deletion; derived sumBy/countBy values displayed by Stat/ProgressBar/ProgressRing react automatically after record mutations.',
-    '- For a record history that needs both newest-first order and delete, use core List unless a custom Repeat is genuinely necessary; a custom Repeat must include records.remove itself.',
-    '- For a live total/progress criterion, bind a visible Stat/Text and ProgressBar/ProgressRing to derived expressions that read the same named collection changed by records.add/update/remove.',
-    '- For photo analysis, keep the reachable chain explicit: camera.capture -> llm.ask structured fields -> editable fields if correction is required -> records.add.',
-    '- Remove unused custom components/screens instead of preserving them for appearance.',
-    '- Prefer core components and simple flows when they can satisfy the same UX; reliability beats decorative complexity.',
-    '- Do not spend effort on featureEvidence: the backend audits and writes it after generation.',
-    '- Return the COMPLETE schemaVersion 2 spec as raw JSON only.',
   ].join('\n');
 }

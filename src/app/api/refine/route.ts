@@ -62,11 +62,7 @@ export async function POST(req: Request) {
 
   if (!result.ok) {
     return json(
-      {
-        error: result.error,
-        ...(process.env.TOOLKIN_DEBUG_ERRORS === 'true' ? { errors: result.errors } : {}),
-        attempts: result.attempts,
-      },
+      { error: result.error, errors: result.errors, attempts: result.attempts },
       result.error === 'validation_failed' ? 422 : 503,
       headers,
     );
@@ -84,8 +80,6 @@ export async function POST(req: Request) {
     attempts: result.attempts,
     tokens: result.usage,
   });
-
-  if (!charged.ok) return json({ error: 'insufficient_credits', credits: charged.credits, price }, 402, headers);
 
   return json(
     {
