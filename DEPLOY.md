@@ -127,6 +127,7 @@ openssl rand -hex 32
 потом применяйте уже проверенную миграцию:
 
 ```bash
+set -euo pipefail
 npm test
 npm run typecheck
 npm run build
@@ -276,6 +277,7 @@ npm run eval
 новый код проходит проверки. Миграция применяется только после успешной сборки:
 
 ```bash
+set -euo pipefail
 npm install --include=dev
 npm test
 npm run typecheck
@@ -283,6 +285,10 @@ npm run build
 npx prisma migrate deploy
 pm2 restart toolkin --update-env
 ```
+
+`set -euo pipefail` здесь принципиален: если `npm test`, typecheck или build упал,
+shell прекращает deployment и старый PM2-процесс продолжает работать. Не перезапускайте
+production после красного теста только потому, что следующая команда `next build` прошла.
 
 Если `.env` был создан из предыдущего архива, обновите latency-параметры вручную
 (замена `.env.example` существующий `.env` не меняет):

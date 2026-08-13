@@ -53,7 +53,9 @@ request
   → user feature selection / custom features
   → POST /generate → durable PostgreSQL GenerationJob → 202 jobId
   → background UX/AppSpec v2 generation
-  → deterministic normalize/autofix → validateSpec → behavioral smokeTest
+  → deterministic normalize/autofix
+  → Product Contract Compiler (records / aggregates / AI data-flow / history)
+  → validateSpec → behavioral smokeTest
   → reachable implementation graph → strict minimum checks
   → independent acceptance-criteria audit → backend-generated featureEvidence
   → up to two semantic repair rounds after deterministic compiler fixes
@@ -116,6 +118,16 @@ progress-компоненты реактивно пересчитываются 
 экранов/components/actions/capabilities. Неиспользованное определение компонента или
 orphan-screen доказательством не считается. Неполный/повреждённый ответ самого QA
 считается сбоем verifier, а не поводом перестраивать рабочее приложение.
+
+**Product Contract Compiler закрывает обязательную логику кодом, а не повторным prompt.**
+Builder по-прежнему решает, какие экраны, карточки и controls удобнее для конкретной
+задачи. Но если согласованный Product Plan уже требует persistent records, structured AI
+или live aggregate, backend детерминированно достраивает runtime data-flow перед строгой
+валидацией. Например: `camera.capture → llm.ask(fields) → редактируемые state-поля →
+records.add`, `sumBy(records, collection, valueField) → Stat/ProgressBar`, а record-backed
+`Repeat` получает named collection и реальное `records.remove`. Это не доменный хардкод:
+collection/fields/goal берутся из самой сгенерированной схемы и Product Plan. Такой класс
+ошибок больше не тратит semantic repair rounds Gemini.
 
 **Validator проверяет исполнимость контракта.** Помимо формы JSON он проверяет
 screen targets, navigation mode, component cycles, props/bind, record schemas,

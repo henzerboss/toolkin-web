@@ -50,6 +50,9 @@ const RUNTIME_GUARANTEES = [
   'sumBy/avgBy/countBy/sumWhere/countWhere/valuesBy/latestBy always read the current records store. A Stat/Text/ProgressBar/ProgressRing that references such a derived value updates after records.add/update/remove.',
   'A reachable custom component inherits all semantics of the reachable core components/actions inside its expanded template.',
   'camera.capture writes its result to the named state key. llm.ask may consume that image state key and structured fields write typed values into state. A later records.add may persist those values.',
+  'If llm.ask structured fields write state keys that are bound to reachable editable controls (TextField/NumberField/etc.) and a reachable records.add later saves those same keys, the user can review/correct the AI result before saving.',
+  'If records.add mutates collection C and a visible derived aggregate reads collection C via sumBy/countBy/etc., the displayed total is live; if ProgressBar/ProgressRing reads a derived ratio based on that aggregate and a goal state, progress is live too.',
+  'A Repeat with source="records", collection C and an explicit records.remove using the repeated row id is a real visible history with per-record deletion.',
 ];
 
 const SYSTEM = [

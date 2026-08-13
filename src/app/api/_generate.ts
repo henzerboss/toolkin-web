@@ -10,6 +10,7 @@ import { autofix } from '@/lib/autofix';
 import { normalizeGeneratedSpec } from '@/lib/normalizeGeneratedSpec';
 import { smokeTest } from '@/lib/smokeTest';
 import { validateSpec } from '@/lib/validateSpec';
+import { compileFeatureContracts } from '@/lib/contractCompiler';
 import type { MiniAppSpec } from '@/lib/specTypes';
 
 export interface SpecAttempt {
@@ -145,10 +146,19 @@ export async function generateSpec(
     // autofix was designed to repair, so many perfectly recoverable specs never
     // reached the fixer at all.
     const preFixed = autofix(normalized.spec as MiniAppSpec);
-    const validation = validateSpec(preFixed.spec);
+
+    // Product-level semantics are compiled deterministically before validation.
+    // The model chooses IA/UX, while mandatory runtime data-flow implied by the
+    // reviewed Product Plan (records, live aggregates, photo -> structured AI ->
+    // editable fields -> save) is wired by code instead of spending repair rounds.
+    const contracted = compileFeatureContracts(preFixed.spec, plan);
+    const renormalized = normalizeGeneratedSpec(contracted.spec);
+    const postFixed = autofix(renormalized.spec as MiniAppSpec);
+    const allApplied = [...preFixed.applied, ...contracted.applied, ...renormalized.applied, ...postFixed.applied];
+    const validation = validateSpec(postFixed.spec);
 
     if (validation.ok) {
-      const fixed = { spec: validation.spec, applied: preFixed.applied };
+      const fixed = { spec: validation.spec, applied: allApplied };
 
       // Форма правильная — теперь проверяем, что оно работает. Валидатор
       // пропускает утилиты, где на экране NaN, а кнопки ничего не меняют:
@@ -234,7 +244,7 @@ export async function generateSpec(
     }
 
     lastErrors = validation.errors;
-    prompt = repairPromptForRound(initialPrompt, preFixed.spec, lastErrors, round);
+    prompt = repairPromptForRound(initialPrompt, postFixed.spec, lastErrors, round);
   }
 
   // A reviewed feature selection is a contract. Returning a partially implemented
@@ -302,9 +312,12 @@ export async function generateFromRequest(
   if (cached) {
     const normalized = normalizeGeneratedSpec(cached);
     const preFixed = autofix(normalized.spec as MiniAppSpec);
-    const validated = validateSpec(preFixed.spec);
+    const contracted = compileFeatureContracts(preFixed.spec, plan);
+    const renormalized = normalizeGeneratedSpec(contracted.spec);
+    const postFixed = autofix(renormalized.spec as MiniAppSpec);
+    const validated = validateSpec(postFixed.spec);
     if (validated.ok) {
-      const fixed = { spec: validated.spec, applied: preFixed.applied };
+      const fixed = { spec: validated.spec, applied: [...preFixed.applied, ...contracted.applied, ...renormalized.applied, ...postFixed.applied] };
       const smoke = smokeTest(fixed.spec);
       const checked = smoke.ok ? checkStoredFeatureEvidence(fixed.spec, plan.features) : null;
       if (checked?.ok) {

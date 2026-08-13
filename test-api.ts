@@ -4,6 +4,7 @@ import { autofix } from './src/lib/autofix';
 import { normalizeGeneratedSpec } from './src/lib/normalizeGeneratedSpec';
 import { smokeTest } from './src/lib/smokeTest';
 import { analyzeImplementation, checkFeatures, checkStoredFeatureEvidence } from './src/lib/featureCheck';
+import { compileFeatureContracts } from './src/lib/contractCompiler';
 import type { Feature, Plan } from './src/app/api/_plan';
 import { createLocalPlan, normalizePlanCandidate, planForFeatures } from './src/app/api/_plan';
 import { toGeminiRestThinkingLevel, toResponseJsonSchema } from './src/app/api/_shared';
@@ -363,6 +364,70 @@ const listDeleteFeature: Feature[] = [{
 const listDeleteInventory = analyzeImplementation(listDeleteSpec);
 assert.ok(listDeleteInventory.actions.has('records.remove'));
 assert.ok(checkFeatures(listDeleteSpec, listDeleteFeature).ok);
+
+// Product-contract compiler regression: a visually plausible tracker with no
+// actual data-flow must be wired deterministically instead of burning builder
+// repair rounds. This mirrors the production failure class where scanner fields,
+// progress and history existed but camera/AI/save/aggregate bindings did not.
+const unwiredTracker: MiniAppSpec = {
+  schemaVersion: 2, id: 'unwired-tracker', version: 1,
+  manifest: { name: 'Питание', icon: 'camera', color: 'green', locale: 'ru' },
+  capabilities: ['camera', 'llm'],
+  state: { photo: '', dish: '', kcal: 0, protein: 0, fat: 0, carbs: 0, dailyGoal: 2000, progress: 0, totalKcal: 0 },
+  collections: { meals: { fields: [
+    { key: 'photo', label: 'Фото', kind: 'image' },
+    { key: 'dish', label: 'Блюдо', kind: 'text' },
+    { key: 'kcal', label: 'Ккал', kind: 'number' },
+    { key: 'protein', label: 'Белки', kind: 'number' },
+    { key: 'fat', label: 'Жиры', kind: 'number' },
+    { key: 'carbs', label: 'Углеводы', kind: 'number' },
+  ], valueField: 'kcal' } },
+  screens: {
+    home: { type: 'Screen', children: [
+      { type: 'Stat', label: 'Калории', value: '{{totalKcal | number}}' },
+      { type: 'ProgressBar', progress: 'progress' },
+      { type: 'Repeat', source: 'records', as: 'meal', empty: 'Пока пусто', children: [{ type: 'Text', value: '{{mealKcal | number}}' }] },
+      { type: 'Button', title: 'Добавить', onPress: [{ action: 'nav.go', screen: 'scanner' }] },
+    ] },
+    scanner: { type: 'Screen', children: [
+      { type: 'Image', source: 'photo', ratio: 'square' },
+      { type: 'TextField', label: 'Блюдо', bind: 'dish' },
+      { type: 'NumberField', label: 'Ккал', bind: 'kcal' },
+      { type: 'NumberField', label: 'Белки', bind: 'protein' },
+      { type: 'NumberField', label: 'Жиры', bind: 'fat' },
+      { type: 'NumberField', label: 'Углеводы', bind: 'carbs' },
+      { type: 'Button', title: 'Назад', onPress: [{ action: 'nav.back' }] },
+    ] },
+  },
+  navigation: { start: 'home', mode: 'stack' },
+};
+const unwiredPlan: Plan = {
+  kind: 'tracker', title: 'Питание', summary: 'Анализ и учёт', navigation: 'stack',
+  screens: [{ id: 'home', title: 'Сегодня', purpose: 'Сводка' }, { id: 'scanner', title: 'Добавить', purpose: 'Фото и подтверждение' }],
+  customComponents: [], capabilities: ['camera', 'llm'], components: ['Stat', 'ProgressBar', 'Repeat'], needsRecords: true, needsStructuredAi: true,
+  features: [
+    { id: 'ai-food', title: 'Анализ фото', description: 'Распознать данные и дать исправить', essential: true,
+      acceptanceCriteria: ['Фото анализируется', 'Данные можно исправить перед сохранением'], requiresRecords: true, requiresStructuredAi: true,
+      requiresComponents: [], requiresActions: ['camera.capture', 'llm.ask', 'records.add'], requiresCapabilities: ['camera', 'llm'] },
+    { id: 'progress', title: 'Прогресс', description: 'Живая сумма и прогресс', essential: true,
+      acceptanceCriteria: ['Сумма обновляется', 'Прогресс обновляется'], requiresRecords: true, requiresStructuredAi: false,
+      requiresComponents: ['Stat', 'ProgressBar'], requiresActions: [], requiresCapabilities: [] },
+    { id: 'history', title: 'История', description: 'Список и удаление', essential: true,
+      acceptanceCriteria: ['Записи видны', 'Запись можно удалить'], requiresRecords: true, requiresStructuredAi: false,
+      requiresComponents: ['Repeat'], requiresActions: ['records.remove'], requiresCapabilities: [] },
+  ],
+};
+const contractedTracker = compileFeatureContracts(unwiredTracker, unwiredPlan);
+const contractedNormalized = normalizeGeneratedSpec(contractedTracker.spec);
+const contractedFixed = autofix(contractedNormalized.spec as MiniAppSpec);
+const contractedValidation = validateSpec(contractedFixed.spec);
+assert.ok(contractedValidation.ok, contractedValidation.ok ? '' : contractedValidation.errors.join(' | '));
+const contractedInventory = analyzeImplementation(contractedFixed.spec);
+for (const action of ['camera.capture', 'llm.ask', 'records.add', 'records.remove']) assert.ok(contractedInventory.actions.has(action), `missing compiled action ${action}`);
+assert.ok(Object.values(contractedFixed.spec.derived ?? {}).some((expression) => expression.includes('sumBy(records, "meals", "kcal")')));
+assert.ok((contractedFixed.spec.screens.home.children ?? []).some((node) => node.type === 'Repeat' && node.collection === 'meals'));
+assert.ok(smokeTest(contractedFixed.spec).ok, smokeTest(contractedFixed.spec).issues.join(' | '));
+console.log('Product contract compiler wires records, structured AI, progress and history');
 
 // Semantic verifier regression: the auditor now evaluates criteria independently.
 // This prevents contradictory feature-level answers ("the summary is reactive"
