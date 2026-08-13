@@ -7,7 +7,7 @@ import { buildGeneratePrompt, buildRepairPrompt, buildSystemInstruction } from '
  * они не отражаются ни в промпте, ни в манифесте, а спека, валидная вчера,
  * после ужесточения проверок может стать невалидной.
  */
-const CACHE_EPOCH = 'v7';
+const CACHE_EPOCH = 'v8';
 
 /**
  * Отпечаток конвейера считается из самого промпта и манифеста DSL, а не

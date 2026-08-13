@@ -109,6 +109,30 @@ const logSpec = afterNormalize.ok ? afterNormalize.spec : null;
 assert.strictEqual(logSpec?.collections?.log.fields.find((f) => f.key === 'score')?.kind, 'number');
 console.log('Missing named collection is deterministically recovered before validation');
 
+
+// Regression for the next production failure: recoverable model slips must be
+// normalized/autofixed BEFORE the strict validator, otherwise the repair loop
+// rejects exactly the errors that deterministic code already knows how to fix.
+const recoverable = JSON.parse(JSON.stringify(DEMO_SPECS[0]));
+delete recoverable.state.bill;
+recoverable.derived.total = 'Math.round(state.bill + state.bill * state.tipPct / 100)';
+recoverable.capabilities = [];
+delete recoverable.screens.home.children[0].label;
+recoverable.screens.home.children[4].children.push({ type: 'Text', value: 'hint' }, { type: 'Text', value: 'hint2' });
+recoverable.screens.home.children[4].onPress = undefined;
+recoverable.screens.home.children[4].children[0].onPress = { action: 'clipboard.set', value: '{{perPerson | money}}' };
+recoverable.navigation = { start: 'ghost', mode: 'tabs', tabs: [{ screen: 'ghost', label: 'Ghost' }] };
+const recoveredNormalized = normalizeGeneratedSpec(recoverable);
+const recoveredAutofixed = autofix(recoveredNormalized.spec as MiniAppSpec);
+const recoveredValidation = validateSpec(recoveredAutofixed.spec);
+assert.ok(recoveredValidation.ok, recoveredValidation.ok ? '' : recoveredValidation.errors.join(' | '));
+assert.ok((recoveredAutofixed.spec.capabilities ?? []).includes('clipboard'));
+assert.ok('bill' in recoveredAutofixed.spec.state);
+assert.strictEqual(recoveredAutofixed.spec.navigation.start, 'home');
+assert.strictEqual(recoveredAutofixed.spec.navigation.mode, 'single');
+assert.strictEqual((recoveredAutofixed.spec.screens.home.children?.[4] as any).wrap, true);
+console.log('Recoverable generation slips are fixed before hard validation');
+
 // Missing collection argument is only autofilled when there is exactly one
 // declared collection, so normalization never guesses between two data sets.
 const oneCollection = JSON.parse(JSON.stringify(DEMO_SPECS[2]));

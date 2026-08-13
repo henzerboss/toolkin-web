@@ -152,11 +152,14 @@ export async function processGenerationJob(jobId: string): Promise<void> {
     await prisma.generationJob.update({ where: { id: jobId }, data: { attempts: result.attempts } });
 
     if (!result.ok || !result.spec) {
-      await failJob(
+      const detail = (result.errors ?? []).slice(0, 20).join(' | ').slice(0, 12000);
+      console.warn('[toolkin.generate.rejected]', {
         jobId,
-        result.error ?? 'generation_failed',
-        (result.errors ?? []).slice(0, 20).join(' | ').slice(0, 12000),
-      );
+        error: result.error ?? 'generation_failed',
+        attempts: result.attempts,
+        detail: detail.slice(0, 4000),
+      });
+      await failJob(jobId, result.error ?? 'generation_failed', detail);
       return;
     }
 

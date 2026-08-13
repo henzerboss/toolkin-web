@@ -50,7 +50,7 @@ export const COMPONENTS: ComponentDef[] = [
   { type: 'PieChart', description: 'donut chart by record category; collection, groupBy, valueKey', required: ['collection', 'groupBy'] },
   { type: 'Calendar', description: 'month grid; bind selected timestamp, collection/dateKey record dots, marks computed timestamps', binds: true },
   { type: 'DateField', description: 'date/time picker; bind timestamp ms; mode date | time', binds: true },
-  { type: 'Table', description: 'record table; collection, columns [{key,label}], limit', required: ['collection', 'columns'] },
+  { type: 'Table', description: 'record table; collection, columns [{key,label}], limit; 4+ columns scroll horizontally on phones', required: ['collection', 'columns'] },
   { type: 'List', description: 'record history; collection, valueKey/imageKey/suffix/limit', required: ['collection'] },
 ];
 

@@ -53,9 +53,9 @@ request
   → user feature selection / custom features
   → POST /generate → durable PostgreSQL GenerationJob → 202 jobId
   → background UX/AppSpec v2 generation
-  → validateSpec → autofix → behavioral smokeTest
+  → deterministic normalize/autofix → validateSpec → behavioral smokeTest
   → checkFeatures(featureEvidence + exact requirements)
-  → at most one semantic repair round
+  → up to two semantic repair rounds after deterministic compiler fixes
   → credits charge only after success
   → client polls /generate/status and receives result
 ```

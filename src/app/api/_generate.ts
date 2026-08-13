@@ -34,10 +34,45 @@ export interface SpecAttempt {
 
 
 const parsedRepairs = Number.parseInt(process.env.TOOLKIN_MAX_REPAIRS ?? '', 10);
-const MAX_REPAIRS = Number.isFinite(parsedRepairs) && parsedRepairs >= 0 && parsedRepairs <= 1 ? parsedRepairs : 1;
+const MAX_REPAIRS = Number.isFinite(parsedRepairs) && parsedRepairs >= 0 && parsedRepairs <= 2 ? parsedRepairs : 2;
 
 export type GenerationProgressStage = 'building' | 'validating' | 'repairing' | 'finalizing';
 export type GenerationProgress = (stage: GenerationProgressStage) => void | Promise<void>;
+
+const APP_SPEC_RESPONSE_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  additionalProperties: true,
+  required: ['schemaVersion', 'id', 'version', 'manifest', 'capabilities', 'state', 'screens', 'navigation'],
+  properties: {
+    schemaVersion: { type: 'number', enum: [2] },
+    id: { type: 'string' },
+    version: { type: 'number' },
+    manifest: {
+      type: 'object',
+      additionalProperties: true,
+      required: ['name', 'icon', 'color', 'locale'],
+      properties: {
+        name: { type: 'string' }, icon: { type: 'string' }, locale: { type: 'string' },
+        color: { type: 'string', enum: ['blue', 'green', 'amber', 'violet', 'rose', 'teal'] },
+      },
+    },
+    capabilities: {
+      type: 'array',
+      items: { type: 'string', enum: ['clipboard','haptics','share','notifications','camera','scanner','sensors','location','files','network','llm','image','sandbox'] },
+    },
+    state: { type: 'object', additionalProperties: true },
+    collections: { type: 'object', additionalProperties: true },
+    screens: { type: 'object', additionalProperties: true },
+    navigation: {
+      type: 'object',
+      additionalProperties: true,
+      required: ['start', 'mode'],
+      properties: { start: { type: 'string' }, mode: { type: 'string', enum: ['single', 'stack', 'tabs'] } },
+    },
+    components: { type: 'object', additionalProperties: true },
+    featureEvidence: { type: 'object', additionalProperties: true },
+  },
+};
 
 async function reportProgress(callback: GenerationProgress | undefined, stage: GenerationProgressStage): Promise<void> {
   if (!callback) return;
@@ -73,7 +108,7 @@ export async function generateSpec(
     attempts += 1;
     await reportProgress(onProgress, round === 0 ? 'building' : 'repairing');
 
-    const result = await callGemini(system, prompt, { jsonOnly: true, thinking, purpose });
+    const result = await callGemini(system, prompt, { jsonOnly: true, thinking, purpose, responseSchema: APP_SPEC_RESPONSE_SCHEMA });
     if (result.usage) {
       usage.input += result.usage.input;
       usage.output += result.usage.output;
@@ -93,12 +128,16 @@ export async function generateSpec(
 
     await reportProgress(onProgress, 'validating');
     const normalized = normalizeGeneratedSpec(parsed);
-    const validation = validateSpec(normalized.spec);
+
+    // Expression autofix MUST run before strict validation. The previous order
+    // made the validator reject exactly the Math.round/state.foo/=== slips that
+    // autofix was designed to repair, so many perfectly recoverable specs never
+    // reached the fixer at all.
+    const preFixed = autofix(normalized.spec as MiniAppSpec);
+    const validation = validateSpec(preFixed.spec);
 
     if (validation.ok) {
-      // Механические привычки JavaScript чинятся кодом до пробного прогона:
-      // Math.round и state.bill не стоят обращения к модели.
-      const fixed = autofix(validation.spec);
+      const fixed = { spec: validation.spec, applied: preFixed.applied };
 
       // Форма правильная — теперь проверяем, что оно работает. Валидатор
       // пропускает утилиты, где на экране NaN, а кнопки ничего не меняют:
@@ -139,7 +178,7 @@ export async function generateSpec(
     }
 
     lastErrors = validation.errors;
-    prompt = buildRepairPrompt(JSON.stringify(normalized.spec), lastErrors);
+    prompt = buildRepairPrompt(JSON.stringify(preFixed.spec), lastErrors);
   }
 
   // A reviewed feature selection is a contract. Returning a partially implemented
@@ -206,9 +245,10 @@ export async function generateFromRequest(
   const cached = await readCache(request + cacheSuffix, locale);
   if (cached) {
     const normalized = normalizeGeneratedSpec(cached);
-    const validated = validateSpec(normalized.spec);
+    const preFixed = autofix(normalized.spec as MiniAppSpec);
+    const validated = validateSpec(preFixed.spec);
     if (validated.ok) {
-      const fixed = autofix(validated.spec);
+      const fixed = { spec: validated.spec, applied: preFixed.applied };
       const smoke = smokeTest(fixed.spec);
       const checked = smoke.ok ? checkFeatures(fixed.spec, plan.features) : null;
       if (checked?.ok) {
