@@ -58,6 +58,16 @@ export function analyzeImplementation(spec: MiniAppSpec): ImplementationInventor
     components.add(node.type);
     addSite(componentScreens, node.type, screen);
 
+    // Core List owns a real per-row delete control in the mobile runtime. It is
+    // an implicit runtime action rather than JSON onPress, but it must still
+    // count as implementation for Product Plan requirements such as "can delete
+    // an incorrect entry". Keeping the inventory aligned with runtime semantics
+    // prevents a mechanically false feature_incomplete before semantic QA runs.
+    if (node.type === 'List') {
+      actions.add('records.remove');
+      addSite(actionScreens, 'records.remove', screen);
+    }
+
     if (typeof node.bind === 'string') {
       actions.add('state.set');
       addSite(actionScreens, 'state.set', screen);

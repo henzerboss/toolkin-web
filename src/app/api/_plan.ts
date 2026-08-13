@@ -116,6 +116,8 @@ const PLAN_SYSTEM = [
   'For each feature include 1-4 acceptanceCriteria: observable statements that make it clear the feature actually works.',
   'Set requiresRecords per feature when that outcome depends on persistent user-created data; set requiresStructuredAi only when that feature needs typed AI output.',
   'requiresComponents/actions/capabilities are STRICT minimums only. If a feature can be implemented with several UX patterns, leave component requirements empty rather than naming a substitute.',
+  'Use runtime semantics when choosing strict minimums: core List is newest-first and has built-in row deletion. If deletion is required and you choose List, require List; if the UX uses Repeat/custom cards instead, require records.remove.',
+  'For a feature that explicitly promises photo capture + AI analysis + saving, require camera.capture, llm.ask and records.add plus camera/llm capabilities. For a feature that explicitly promises a visible progress bar/ring, require that exact visible component family named by the criterion.',
   'Never say Calendar can be replaced by DateField, Chart by ProgressRing, or one AI action by another. Requirements are exact.',
   '',
   'SCREENS: choose the simplest information architecture that makes the app convenient. 1 screen is fine for a calculator; trackers often need Home/Add/History. Maximum 4.',

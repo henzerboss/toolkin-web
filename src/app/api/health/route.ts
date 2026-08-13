@@ -63,7 +63,7 @@ export async function GET(req: Request) {
       pipelineVersion: PIPELINE_VERSION,
       aiJsonTransport: 'interactions',
       generationTransport: 'durable-job-polling',
-      featureVerification: 'reachable-graph+semantic-audit',
+      featureVerification: 'reachable-graph+runtime-aware-criterion-audit',
       plannerMode: 'interactions-json-primary',
       generationJobsReady,
       generationJobsError,

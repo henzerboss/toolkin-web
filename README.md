@@ -107,10 +107,15 @@ acceptance criterion и проходит ту же проверку, что plan
 не может «доказать» функцию, просто написав красивый `featureEvidence`: backend
 строит reachable graph от `navigation.start`, разворачивает только реально
 использованные composite components, проверяет точные planner minimums, а затем
-отдельный дешёвый auditor трассирует acceptance criteria по UI/actions/state/derived/
-collections. Только после успешного аудита backend сам записывает `featureEvidence`
-из существующих экранов/components/actions/capabilities. Неиспользованное определение
-компонента или orphan-screen доказательством не считается.
+отдельный дешёвый auditor проверяет каждый acceptance criterion отдельно по
+UI/actions/state/derived/collections **и по семантике самого runtime**. Например, core
+`List` уже newest-first и имеет встроенное удаление строки, а derived aggregates и
+progress-компоненты реактивно пересчитываются после изменения records — verifier не
+требует несуществующих дополнительных действий для этих гарантий. Только после
+успешного аудита backend сам записывает `featureEvidence` из существующих
+экранов/components/actions/capabilities. Неиспользованное определение компонента или
+orphan-screen доказательством не считается. Неполный/повреждённый ответ самого QA
+считается сбоем verifier, а не поводом перестраивать рабочее приложение.
 
 **Validator проверяет исполнимость контракта.** Помимо формы JSON он проверяет
 screen targets, navigation mode, component cycles, props/bind, record schemas,

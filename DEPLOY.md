@@ -333,7 +333,7 @@ planner probe через тот же Gemini Interactions JSON-object transport, 
 основным Product Plan path. Он не генерирует тестовые приложения и не пингует каждую
 модель отдельным платным запросом. Перед переключением трафика должны быть
 `aiJsonTransport: "interactions"`, `generationTransport: "durable-job-polling"`,
-`featureVerification: "reachable-graph+semantic-audit"`, `plannerMode: "interactions-json-primary"`,
+`featureVerification: "reachable-graph+runtime-aware-criterion-audit"`, `plannerMode: "interactions-json-primary"`,
 `generationJobsReady: true`, `planWorking: true`, `plannerProbe.ok: true` и
 `productionConfigOk: true`. `working`/`suggestions` показывают, какие модели
 видит именно ваш ключ. `productionConfigOk` в production подтверждает наличие

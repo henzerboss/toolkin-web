@@ -8,7 +8,8 @@ import type { Feature, Plan } from './src/app/api/_plan';
 import { createLocalPlan, normalizePlanCandidate, planForFeatures } from './src/app/api/_plan';
 import { toGeminiRestThinkingLevel, toResponseJsonSchema } from './src/app/api/_shared';
 import { PIPELINE_VERSION, cacheKey } from './src/lib/specCacheKey';
-import { buildGeneratePrompt, buildSystemInstruction } from './src/app/api/_prompt';
+import { buildGeneratePrompt, buildRecoveryPrompt, buildSystemInstruction } from './src/app/api/_prompt';
+import { interpretAuditPayload } from './src/app/api/_featureVerifier';
 import { creditsForProduct } from './src/lib/pricing';
 import { signPlanToken, verifyPlanToken } from './src/lib/planToken';
 import { DEMO_SPECS } from './src/lib/exampleSpecs';
@@ -350,6 +351,40 @@ staleEvidence.featureEvidence.predict = { components: ['GhostCalendar'], actions
 assert.ok(checkFeatures(staleEvidence, promised).ok);
 assert.ok(!checkStoredFeatureEvidence(staleEvidence, promised).ok);
 
+// Core List has a real runtime delete affordance even though the generated JSON
+// does not contain records.remove. Mechanical feature inventory must model that
+// implicit behaviour or it falsely rejects a perfectly working history screen.
+const listDeleteSpec = JSON.parse(JSON.stringify(DEMO_SPECS[2])) as MiniAppSpec;
+const listDeleteFeature: Feature[] = [{
+  id: 'delete-history', title: 'Удаление', description: '', essential: true,
+  acceptanceCriteria: ['Пользователь может удалить ошибочную запись'],
+  requiresComponents: ['List'], requiresActions: ['records.remove'], requiresCapabilities: [],
+}];
+const listDeleteInventory = analyzeImplementation(listDeleteSpec);
+assert.ok(listDeleteInventory.actions.has('records.remove'));
+assert.ok(checkFeatures(listDeleteSpec, listDeleteFeature).ok);
+
+// Semantic verifier regression: the auditor now evaluates criteria independently.
+// This prevents contradictory feature-level answers ("the summary is reactive"
+// while simultaneously listing the same criterion as missing) from discarding a
+// valid app. Evidence is still restricted to the actual reachable inventory.
+const criterionAudit = interpretAuditPayload({ results: [
+  { id: 'predict', criteria: [
+    { index: 0, implemented: true, reason: 'Calendar visibly shows the forecast', screens: ['home'], components: ['Calendar'], actions: [], capabilities: [] },
+  ] },
+  { id: 'remind', criteria: [
+    { index: 0, implemented: true, reason: 'Reachable button schedules the notification', screens: ['home'], components: ['Button'], actions: ['notify.at'], capabilities: ['notifications'] },
+  ] },
+] }, complete, promised, analyzeImplementation(complete));
+assert.ok(criterionAudit.ok, criterionAudit.issues.join(' | '));
+assert.deepStrictEqual(criterionAudit.implemented.sort(), ['predict', 'remind']);
+
+const incompleteAudit = interpretAuditPayload({ results: [
+  { id: 'predict', criteria: [] },
+] }, complete, promised, analyzeImplementation(complete));
+assert.ok(!incompleteAudit.ok);
+assert.strictEqual(incompleteAudit.unavailable, true, 'incomplete QA output is verifier failure, not feature failure');
+
 // Reachability matters: unused custom definitions and orphan screens must not
 // satisfy a feature. Instantiated custom components are expanded so actions in
 // their templates count on the calling screen.
@@ -388,6 +423,9 @@ const promptText = buildGeneratePrompt('трекер расходов', 'ru', to
 const systemText = buildSystemInstruction('ru', tokenPlan);
 assert.match(systemText, /COLLECTION INVARIANT/);
 assert.match(systemText, /explicitly named collection/);
+assert.match(systemText, /Core List already renders a per-row delete button/);
+const recoveryText = buildRecoveryPrompt(promptText, JSON.stringify(complete), ['missing history delete']);
+assert.match(recoveryText, /core List is newest-first and includes per-row deletion/);
 assert.match(promptText, /schemaVersion 2/);
 assert.doesNotMatch(systemText, /"records"\s*:/);
 
