@@ -59,6 +59,17 @@ export interface Plan {
   components: string[];
   needsRecords: boolean;
   needsStructuredAi: boolean;
+  /**
+   * Ни один готовый компонент не решает задачу — нужен свой виджет.
+   *
+   * Это признание границы языка, а не пожелание. Раньше такой запрос всё
+   * равно собирался из имеющихся блоков, и получалась имитация: список дел
+   * без галочек, поле для рисования без холста. Лучше честно построить
+   * недостающее в песочнице, чем подделать его существующими компонентами.
+   */
+  needsCustomWidget: boolean;
+  /** Что именно должен делать виджет — уходит в задание сборщику. */
+  customWidgetPurpose: string;
   summary: string;
   features: Feature[];
 }
@@ -99,12 +110,14 @@ const PLAN_SCHEMA: Record<string, unknown> = {
     components: { type: 'ARRAY', items: { type: 'STRING', enum: COMPONENT_TYPES } },
     needsRecords: { type: 'BOOLEAN' },
     needsStructuredAi: { type: 'BOOLEAN' },
+    needsCustomWidget: { type: 'BOOLEAN' },
+    customWidgetPurpose: { type: 'STRING' },
     summary: { type: 'STRING' },
     features: { type: 'ARRAY', items: FEATURE_SCHEMA, minItems: 3, maxItems: 7 },
   },
   required: [
     'kind', 'title', 'capabilities', 'components',
-    'needsRecords', 'needsStructuredAi', 'summary', 'features',
+    'needsRecords', 'needsStructuredAi', 'needsCustomWidget', 'summary', 'features',
   ],
   // Порядок влияет на качество: модель заполняет поля по очереди, и решение
   // о типе утилиты должно быть принято до выбора компонентов.
@@ -157,6 +170,15 @@ const PLAN_SYSTEM = [
   '',
   'needsRecords: true when entries accumulate over time and history matters.',
   'needsStructuredAi: true when a number or a fixed field must come back from the model.',
+  '',
+  'needsCustomWidget: true ONLY when no listed component can do the job and faking it',
+  'with the available blocks would produce an imitation rather than the thing asked for.',
+  'Examples that need one: a drawing canvas, a piano keyboard, a seating plan, a knob or',
+  'dial, a map, a colour picker, a game field, a signature pad, a scrollable timeline.',
+  'Examples that do NOT need one: a checklist (List with checkKey does it), a chart',
+  '(Chart, LineChart, PieChart exist), a calendar (Calendar exists), a form (fields exist).',
+  'customWidgetPurpose: one sentence on what the widget must show and how it reacts to',
+  'touch — leave it empty when needsCustomWidget is false.',
   'summary: one sentence on what the utility does, in the user language.',
   'title: short name for the utility, max 24 characters, in the user language.',
 ].join('\n');
@@ -194,6 +216,13 @@ function correct(plan: Plan): Plan {
     components.add('Bullets');
   }
 
+  // Свой виджет требует и права, и компонента: без capability он не выполнится,
+  // без компонента модель не поймёт, куда его вставлять.
+  if (plan.needsCustomWidget) {
+    capabilities.add('sandbox');
+    components.add('Sandbox');
+  }
+
   if (capabilities.has('camera')) {
     components.add('Image');
     // Gallery здесь намеренно НЕ добавляется. Раньше добавлялась — и вместе
@@ -226,6 +255,8 @@ const FALLBACK: Plan = {
   components: [],
   needsRecords: false,
   needsStructuredAi: false,
+  needsCustomWidget: false,
+  customWidgetPurpose: '',
   summary: '',
   features: [],
 };
@@ -318,6 +349,8 @@ export async function planApp(request: string, locale: string): Promise<PlanResu
       components: Array.isArray(parsed.components) ? parsed.components : [],
       needsRecords: Boolean(parsed.needsRecords),
       needsStructuredAi: Boolean(parsed.needsStructuredAi),
+      needsCustomWidget: Boolean(parsed.needsCustomWidget),
+      customWidgetPurpose: String(parsed.customWidgetPurpose ?? '').slice(0, 200),
       summary: String(parsed.summary ?? ''),
       features: normalizeFeatures(parsed.features),
     }),

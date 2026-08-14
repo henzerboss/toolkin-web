@@ -61,7 +61,7 @@ export const COMPONENTS: ComponentDef[] = [
   { type: 'Calendar', description: 'month grid, opens on the current month; bind holds the selected date (timestamp), dateKey marks days from record history, marks: [{dates: expression returning timestamps, color, label}] marks computed days', binds: true },
   { type: 'DateField', description: 'date or time picker; bind holds a timestamp in ms, mode: date | time', binds: true },
   { type: 'Table', description: 'table over record history; columns: [{key,label}], max 3 columns — a phone fits no more; image fields render as thumbnails', required: ['columns'] },
-  { type: 'List', description: 'record history; valueKey is the record field, imageKey adds a thumbnail, suffix, limit', required: [] },
+  { type: 'List', description: 'list of records; titleKey, subtitleKey, imageKey, checkKey adds a checkbox, filter is an expression over item_* fields, itemActions: [{title,onPress}], deletable, limit', required: [] },
 ];
 
 export const ACTIONS: ActionDef[] = [
@@ -71,6 +71,8 @@ export const ACTIONS: ActionDef[] = [
   { name: 'state.random', description: 'random number (min, max) or string (chars, length) — the only source of randomness', requires: null, params: ['key', 'min', 'max', 'integer', 'chars', 'length'] },
   { name: 'state.reset', description: 'restore the initial state', requires: null, params: [] },
   { name: 'records.add', description: 'append an entry to history', requires: null, params: ['values'] },
+  { name: 'records.update', description: 'change fields of one record; id and values', requires: null, params: ['id', 'values'] },
+  { name: 'records.toggle', description: 'flip a boolean field of one record — the basis of any checklist; id and key', requires: null, params: ['id', 'key'] },
   { name: 'records.remove', description: 'delete an entry', requires: null, params: ['id'] },
   { name: 'records.clear', description: 'wipe the history', requires: null, params: [] },
   { name: 'timer.start', description: 'start the countdown; seconds is required', requires: null, params: ['seconds'] },
@@ -99,6 +101,9 @@ export const FUNCTION_NAMES = [
 export const FILTER_NAMES = ['money', 'number', 'integer', 'percent', 'date', 'time', 'duration'];
 
 /** Значения, которые рантайм подставляет в область видимости сам. */
+/** Доступно только внутри действий и фильтра строки списка. */
+export const ITEM_SCOPE = ['itemId', 'item_<field> — любое поле записи'];
+
 export const BUILTIN_SCOPE = [
   'nowMs',
   'llmBusy', 'llmError',

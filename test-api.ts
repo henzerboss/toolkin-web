@@ -511,3 +511,83 @@ assert.match(
   /hardcoded date/,
 );
 console.log('Массивы и захардкоженные даты проверены');
+
+// Список дел — самое базовое приложение, какое бывает, и до появления
+// галочек и фильтра оно не выражалось вовсе: модель собирала слот на одну
+// задачу, потому что отметить пункт выполненным было нечем.
+const todo = {
+  schemaVersion: 1, id: 'todo', version: 1,
+  manifest: { name: 'Мои задачи', icon: 'checklist', color: 'blue', locale: 'ru' },
+  capabilities: [],
+  state: { draft: '' },
+  records: { fields: [
+    { key: 'title', label: 'Задача', kind: 'text' },
+    { key: 'done', label: 'Выполнено', kind: 'number' },
+  ], valueField: 'done' },
+  derived: { left: 'recordCount - sum(recordValues)' },
+  ui: { type: 'Screen', children: [
+    { type: 'Stat', label: 'Осталось', value: '{{left | integer}}' },
+    { type: 'TextField', label: 'Новая задача', bind: 'draft' },
+    { type: 'Button', title: 'Добавить', variant: 'primary', disabled: "draft == ''",
+      onPress: [
+        { action: 'records.add', values: { title: '{{draft}}', done: 0 } },
+        { action: 'state.set', key: 'draft', value: '' },
+      ] },
+    { type: 'List', titleKey: 'title', checkKey: 'done', filter: '!item_done', showDate: false },
+    { type: 'List', titleKey: 'title', checkKey: 'done', filter: 'item_done', showDate: false,
+      itemActions: [
+        { title: 'Вернуть', onPress: [{ action: 'records.update', id: '{{itemId}}', values: { done: 0 } }] },
+      ] },
+  ] },
+};
+const todoResult = validateSpec(todo);
+assert.ok(todoResult.ok, `список дел должен собираться: ${todoResult.ok ? '' : todoResult.errors.join(' | ')}`);
+assert.ok(smokeTest(todoResult.spec).ok, 'список дел должен проходить прогон');
+
+// Слот вместо списка — ровно то, что модель делала до появления галочек.
+const slot = {
+  ...todo,
+  state: { draft: '', currentTask: '' },
+  ui: { type: 'Screen', children: [
+    { type: 'Stat', label: 'Выполнено', value: '{{recordCount | integer}}' },
+    { type: 'Text', value: 'Задача: {{currentTask}}' },
+    { type: 'Button', title: 'Завершить', variant: 'primary',
+      onPress: [{ action: 'records.add', values: { title: '{{currentTask}}', done: 1 } }] },
+    { type: 'List', titleKey: 'title', showDate: false },
+  ] },
+};
+assert.match(
+  validateSpec(slot).ok ? '' : validateSpec(slot).errors.join('\n'),
+  /do not model a list as a single item in state/,
+);
+console.log('Список дел и защита от слота проверены');
+
+// Свой виджет: когда готового компонента нет, модель строит недостающее
+// песочницей внутри обычного экрана, а не подделывает существующими блоками.
+const drawing = {
+  schemaVersion: 1, id: 'sketch', version: 1,
+  manifest: { name: 'Скетчбук', icon: 'brush', color: 'violet', locale: 'ru' },
+  capabilities: ['sandbox'],
+  state: { strokes: 0, color: 'black' },
+  ui: { type: 'Screen', children: [
+    { type: 'Stat', label: 'Штрихов', value: '{{strokes | integer}}' },
+    { type: 'Select', label: 'Цвет', bind: 'color', options: [
+      { value: 'black', label: 'Чёрный' }, { value: 'red', label: 'Красный' },
+    ] },
+    { type: 'Sandbox', height: 260,
+      html: '<canvas id="c"></canvas><script>toolkin.onState(function(s){});document.addEventListener("touchmove",function(){toolkin.set("strokes",1)});</script>' },
+    { type: 'Button', title: 'Очистить', onPress: [{ action: 'state.set', key: 'strokes', value: 0 }] },
+  ] },
+};
+const drawingResult = validateSpec(drawing);
+assert.ok(drawingResult.ok, `виджет должен собираться: ${drawingResult.ok ? '' : drawingResult.errors.join(' | ')}`);
+assert.ok(smokeTest(drawingResult.spec).ok);
+
+// Виджет, не связанный с состоянием, — картинка, а не часть утилиты.
+const isolated = JSON.parse(JSON.stringify(drawing));
+isolated.ui.children[2].html = '<canvas id="c"></canvas><script>document.addEventListener("touchmove",function(){});</script>';
+assert.match(
+  validateSpec(isolated).ok ? '' : validateSpec(isolated).errors.join('\n'),
+  /never touches toolkin/,
+);
+console.log('Собственный виджет проверен');

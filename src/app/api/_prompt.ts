@@ -62,6 +62,27 @@ const PLAYBOOK: Record<string, string[]> = {
     'Without the records block entries vanish on close and recordValues stays empty.',
     'Default to List for showing history — it is readable on a narrow screen.',
     'Use Table only for two or three short numeric columns; four columns do not fit a phone.',
+    '',
+    'Editable lists. Records are not a write-only log: a row can be checked off, changed',
+    'and filtered. Inside a row action and inside filter you get itemId and every record',
+    'field prefixed with item_. A to-do list is therefore a normal list, never a single',
+    'task held in state:',
+    '  "records": { "fields": [{ "key": "title", "label": "Task", "kind": "text" },',
+    '                          { "key": "done", "label": "Done", "kind": "number" }] },',
+    '  "state": { "draft": "" },',
+    '  { "type": "TextField", "label": "New task", "bind": "draft" },',
+    '  { "type": "Button", "title": "Add", "variant": "primary", "disabled": "draft == \'\'",',
+    '    "onPress": [{ "action": "records.add", "values": { "title": "{{draft}}", "done": 0 } },',
+    '                { "action": "state.set", "key": "draft", "value": "" }] }',
+    '  { "type": "List", "titleKey": "title", "checkKey": "done", "filter": "!item_done",',
+    '    "showDate": false, "empty": "Nothing to do" }',
+    '  { "type": "List", "titleKey": "title", "checkKey": "done", "filter": "item_done",',
+    '    "showDate": false, "empty": "Nothing done yet" }',
+    'Tapping the checkbox flips the field by itself — no action needed. For anything else',
+    'use itemActions: [{ "title": "Repeat", "onPress": [{ "action": "records.update",',
+    '  "id": "{{itemId}}", "values": { "done": 0 } }] }].',
+    'NEVER model a list as one item in state with an "add / complete" cycle. That is not',
+    'a list, it is a single slot, and it is the wrong answer to every checklist request.',
   ],
 
   countdown: [
@@ -188,6 +209,32 @@ const PLAYBOOK: Record<string, string[]> = {
     'All of them read the record history, so they stay empty without a records block.',
   ],
 
+  customWidget: [
+    'MISSING COMPONENT. The listed components do not cover this task, so build the missing',
+    'piece yourself as an inline Sandbox — a self-contained HTML/JS widget placed among the',
+    'normal blocks, not instead of them. Use it for the one thing that is missing and keep',
+    'everything else declarative: inputs, results and history stay as regular components,',
+    'because only those can be checked and only those look native.',
+    '',
+    'The widget lives inside the same utility and shares its state:',
+    '  { "type": "Sandbox", "height": 220, "html": "<canvas id=c></canvas><script>…</script>" }',
+    '',
+    'Inside it you get:',
+    '  toolkin.state              current state and derived values, always up to date',
+    '  toolkin.onState(cb)        called on every change — redraw here',
+    '  toolkin.set(key, value)    write a state key; the rest of the screen updates',
+    '  toolkin.save({...})        append a record to the history',
+    '  toolkin.records()          read the history',
+    '  toolkin.ask / capture / image / notify — same as the actions, same permissions',
+    '',
+    'Rules that make the widget feel native rather than pasted in:',
+    '  - use the CSS variables --bg, --surface, --text, --accent, --muted, --border, --radius',
+    '  - handle touchstart and touchmove, not mouse events',
+    '  - no external scripts, no fetch, no CDN — the sandbox has no network',
+    '  - set an explicit height in points; a widget of unknown height breaks the layout',
+    '  - keep the html under 60000 characters',
+  ],
+
   game: [
     'This is a game, so the whole game is ONE Sandbox node. Not a board of Buttons:',
     'buttons cannot have an opponent, cannot animate and cannot use randomness.',
@@ -222,6 +269,8 @@ interface PromptPlan {
   summary: string;
   title: string;
   features?: { id: string; title: string; description: string }[];
+  needsCustomWidget?: boolean;
+  customWidgetPurpose?: string;
 }
 
 /** Какие разделы нужны этому плану. Без плана берутся все. */
@@ -230,6 +279,7 @@ function sectionsFor(plan?: PromptPlan): string[] {
 
   const sections = new Set<string>();
   if (plan.kind === 'game') sections.add('game');
+  if ((plan as { needsCustomWidget?: boolean }).needsCustomWidget) sections.add('customWidget');
   if (plan.kind === 'timer' || plan.components.includes('ProgressRing')) sections.add('timer');
   if (plan.kind === 'countdown' || plan.components.includes('DateField') || plan.components.includes('Calendar')) {
     sections.add('countdown');
@@ -360,6 +410,9 @@ export function buildGeneratePrompt(prompt: string, locale: string, plan?: Promp
       `  record history: ${plan.needsRecords ? 'yes' : 'no'}`,
       `  structured model answer: ${plan.needsStructuredAi ? 'yes — use llm.ask with fields' : 'no'}`,
       `  summary: ${plan.summary}`,
+      ...(plan.needsCustomWidget
+        ? [`  custom widget needed: ${plan.customWidgetPurpose || 'the missing interactive part'}`]
+        : []),
     );
   }
 

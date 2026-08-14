@@ -169,7 +169,43 @@ function checkWiring(spec: MiniAppSpec, errors: string[]): void {
 
   checkAiWiring(spec, steps, serialized, errors);
   checkArrayRendering(spec, serialized, errors);
+  checkSingleSlotList(spec, steps, errors);
   checkSandbox(spec, errors);
+}
+
+/**
+ * Список, смоделированный как одна ячейка состояния.
+ *
+ * Пока записи были журналом без изменения, модель вынужденно собирала список
+ * дел так: одна активная задача в state, кнопка «завершить» переносит её в
+ * историю. Получалось не приложение, а слот на одну задачу. Теперь у списка
+ * есть галочки и действия, и такой обходной манёвр — ошибка.
+ */
+function checkSingleSlotList(spec: MiniAppSpec, steps: Step[], errors: string[]): void {
+  if (!spec.records) return;
+
+  const addsRecord = steps.some((step) => step.action === 'records.add');
+  if (!addsRecord) return;
+
+  // Признак слота: кнопка одновременно дописывает запись и очищает поле,
+  // которое при этом является единственным носителем «текущего» элемента,
+  // а список выводится без галочки и без фильтра.
+  const serialized = JSON.stringify(spec.ui);
+  const hasCheckbox = /"checkKey"/.test(serialized);
+  const hasFilter = /"filter"/.test(serialized);
+  const hasItemActions = /"itemActions"/.test(serialized);
+
+  const looksLikeChecklist = spec.records.fields.some((field) =>
+    /done|complete|checked|finish|выполн/i.test(`${field.key} ${field.label}`),
+  );
+
+  if (looksLikeChecklist && !hasCheckbox && !hasFilter && !hasItemActions) {
+    errors.push(
+      'This looks like a checklist, but the List has no checkKey and no filter. ' +
+        'Give the list a checkbox: { "checkKey": "done", "filter": "!item_done" } — ' +
+        'do not model a list as a single item in state',
+    );
+  }
 }
 
 /**
@@ -200,6 +236,10 @@ function checkArrayRendering(spec: MiniAppSpec, serialized: string, errors: stri
  * отрезан от сети, такой код просто не заработает, а пользователь увидит
  * пустой прямоугольник вместо игры и не поймёт почему.
  */
+function countNodes(node: UiNode): number {
+  return 1 + childrenOf(node).reduce((sum, child) => sum + countNodes(child), 0);
+}
+
 function checkSandbox(spec: MiniAppSpec, errors: string[]): void {
   const sandboxes: string[] = [];
   const boardCells = new Set<string>();
@@ -232,6 +272,21 @@ function checkSandbox(spec: MiniAppSpec, errors: string[]): void {
     errors.push('Sandbox: the "sandbox" capability is missing from capabilities');
   }
 
+  // Виджет, вставленный в обычный экран, не должен подменять собой всё:
+  // остальные блоки проверяемы и выглядят нативно, песочница — нет.
+  const totalNodes = countNodes(spec.ui);
+  if (sandboxes.length > 0 && totalNodes <= 2 && !/"Stat"|"Button"|"List"/.test(JSON.stringify(spec.ui))) {
+    // Игра — законное исключение: она и есть всё приложение.
+    const looksLikeGame = /requestAnimationFrame|canvas|score/i.test(sandboxes.join(' '));
+    if (!looksLikeGame) {
+      errors.push(
+        'Sandbox replaces the whole screen. Build only the missing part as a widget and keep ' +
+          'inputs, results and history as regular components — those are the ones that can be ' +
+          'verified and that look native',
+      );
+    }
+  }
+
   for (const html of sandboxes) {
     if (/<script[^>]+src=/i.test(html)) {
       errors.push('Sandbox: external scripts are not loadable — the sandbox has no network. Inline all code');
@@ -246,7 +301,15 @@ function checkSandbox(spec: MiniAppSpec, errors: string[]): void {
       errors.push('Sandbox: html is too large (limit 60000 characters). Simplify the game');
     }
     if (!/onclick|addEventListener|touchstart/i.test(html)) {
-      errors.push('Sandbox: no input handlers found — the game will not react to touch');
+      errors.push('Sandbox: no input handlers found — the widget will not react to touch');
+    }
+    // Виджет, не подписанный на состояние и ничего не пишущий обратно, —
+    // картинка, а не часть утилиты.
+    if (!/toolkin\.(onState|set|save|state|ask|capture|image)/.test(html)) {
+      errors.push(
+        'Sandbox: the widget never touches toolkin — it neither reads state nor writes anything back. ' +
+          'Subscribe with toolkin.onState(cb) and report results with toolkin.set or toolkin.save',
+      );
     }
   }
 }
