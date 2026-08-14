@@ -4,6 +4,8 @@ import { canAfford, charge } from '@/lib/credits';
 import { COST } from '@/lib/pricing';
 
 export const runtime = 'nodejs';
+/** план + сборка + до двух починок: дефолтного лимита платформы на это не хватает. */
+export const maxDuration = 120;
 
 interface Body {
   prompt?: string;

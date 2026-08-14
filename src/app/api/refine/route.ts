@@ -6,6 +6,8 @@ import { COST } from '@/lib/pricing';
 import { validateSpec } from '@/lib/validateSpec';
 
 export const runtime = 'nodejs';
+/** сборка + до двух починок: дефолтного лимита платформы на это не хватает. */
+export const maxDuration = 120;
 
 interface Body {
   spec?: unknown;

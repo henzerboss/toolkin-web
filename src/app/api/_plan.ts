@@ -188,9 +188,10 @@ function correct(plan: Plan): Plan {
 
   if (capabilities.has('camera')) {
     components.add('Image');
-    // Снимок в истории должен быть виден: иначе в таблицу печатается путь
-    // к файлу, а пользователь считает, что фото не сохранилось.
-    if (plan.needsRecords) components.add('Gallery');
+    // Gallery здесь намеренно НЕ добавляется. Раньше добавлялась — и вместе
+    // с List, у которого модель ставила imageKey, снимок выводился дважды:
+    // сеткой и миниатюрой в строке. Способ показать фото в истории выбирает
+    // сборщик, а план не должен навязывать оба сразу.
   }
 
   if (capabilities.has('image')) components.add('Image');

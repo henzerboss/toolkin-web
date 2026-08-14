@@ -135,6 +135,45 @@ function fixNode(node: UiNode, applied: Set<string>): UiNode {
   return result as unknown as UiNode;
 }
 
+/**
+ * Снимок из истории, показанный дважды — сеткой Gallery и миниатюрой в List, —
+ * выглядит как ошибка вёрстки. Оставляем сетку: она читается лучше, а строка
+ * с миниатюрой рядом с ней просто повторяет то же самое.
+ */
+function dropDuplicateThumbnails(node: UiNode, hasGallery: boolean, applied: Set<string>): UiNode {
+  const result: Record<string, unknown> = { ...node };
+
+  if (hasGallery && node.type === 'List' && typeof node.imageKey === 'string') {
+    delete result.imageKey;
+    applied.add('дубль миниатюры');
+  }
+
+  if (Array.isArray(node.children)) {
+    result.children = node.children.map((child) => dropDuplicateThumbnails(child, hasGallery, applied));
+  }
+  if (Array.isArray(node.tabs)) {
+    result.tabs = (node.tabs as unknown as Record<string, unknown>[]).map((tab) => ({
+      ...tab,
+      children: Array.isArray(tab.children)
+        ? (tab.children as UiNode[]).map((child) => dropDuplicateThumbnails(child, hasGallery, applied))
+        : tab.children,
+    }));
+  }
+
+  return result as unknown as UiNode;
+}
+
+function hasComponent(node: UiNode, type: string): boolean {
+  if (node.type === type) return true;
+
+  const children = Array.isArray(node.children) ? node.children : [];
+  const fromTabs = Array.isArray(node.tabs)
+    ? (node.tabs as unknown as { children?: UiNode[] }[]).flatMap((tab) => tab?.children ?? [])
+    : [];
+
+  return [...children, ...fromTabs].some((child) => hasComponent(child, type));
+}
+
 export function autofix(spec: MiniAppSpec): AutofixResult {
   const applied = new Set<string>();
 
@@ -143,11 +182,14 @@ export function autofix(spec: MiniAppSpec): AutofixResult {
     derived[key] = fixExpression(expression, applied);
   }
 
+  const ui = fixNode(spec.ui, applied);
+  const cleaned = dropDuplicateThumbnails(ui, hasComponent(ui, 'Gallery'), applied);
+
   return {
     spec: {
       ...spec,
       ...(spec.derived ? { derived } : {}),
-      ui: fixNode(spec.ui, applied),
+      ui: cleaned,
     },
     applied: [...applied],
   };

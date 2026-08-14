@@ -2,6 +2,8 @@ import { cors, guard, json } from '../_shared';
 import { planApp } from '../_plan';
 
 export const runtime = 'nodejs';
+/** один вызов, но модель думает: дефолтного лимита платформы на это не хватает. */
+export const maxDuration = 120;
 
 interface Body {
   prompt?: string;

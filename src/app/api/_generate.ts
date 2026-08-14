@@ -60,7 +60,10 @@ export async function generateSpec(
   for (let round = 0; round <= MAX_REPAIRS; round++) {
     attempts += 1;
 
-    const result = await callGemini(system, prompt, { jsonOnly: true, thinking, purpose });
+    // На починке уровень размышления снижается: ошибки уже названы поимённо,
+    // планировать нечего, а каждая лишняя секунда приближает таймаут клиента.
+    const roundThinking = round === 0 ? thinking : 'low';
+    const result = await callGemini(system, prompt, { jsonOnly: true, thinking: roundThinking, purpose });
     if (result.usage) {
       usage.input += result.usage.input;
       usage.output += result.usage.output;

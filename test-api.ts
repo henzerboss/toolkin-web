@@ -425,3 +425,48 @@ const tabFeatures: Feature[] = [
 ];
 assert.ok(checkFeatures(tabsValid.spec, tabFeatures).ok, 'фичи во вкладках должны находиться');
 console.log('Вкладки проверены во всех анализаторах');
+
+// График, привязанный к нечисловому полю, рисует пустоту — утилита работает,
+// но выглядит сломанной. Самый обидный вид поломки.
+const chartOnText = {
+  schemaVersion: 1, id: 'kbju', version: 1,
+  manifest: { name: 'Калории', icon: 'x', color: 'amber', locale: 'ru' },
+  capabilities: [],
+  state: { goal: 2000 },
+  records: { fields: [
+    { key: 'photo', label: 'Фото', kind: 'image' },
+    { key: 'kcal', label: 'Ккал', kind: 'number' },
+  ], valueField: 'photo' },
+  derived: { eaten: 'sum(recordValues)' },
+  ui: { type: 'Screen', children: [
+    { type: 'Stat', label: 'Съедено', value: '{{eaten | integer}}' },
+    { type: 'LineChart', label: 'Динамика', values: 'recordValues' },
+  ] },
+};
+const chartResult = validateSpec(chartOnText);
+assert.ok(!chartResult.ok);
+assert.match(chartResult.errors.join('\n'), /valueField, and that field must be a number/);
+
+// Дубль миниатюры: Gallery и List с imageKey показывают одно и то же дважды.
+const doubleThumb = {
+  schemaVersion: 1, id: 'dt', version: 1,
+  manifest: { name: 'Фото', icon: 'x', color: 'amber', locale: 'ru' },
+  capabilities: ['camera'],
+  state: { photo: '' },
+  records: { fields: [
+    { key: 'photo', label: 'Фото', kind: 'image' },
+    { key: 'kcal', label: 'Ккал', kind: 'number' },
+  ], valueField: 'kcal' },
+  ui: { type: 'Screen', children: [
+    { type: 'Stat', label: 'Съедено', value: '{{recordCount | integer}}' },
+    { type: 'Button', title: 'Снять',
+      onPress: [{ action: 'camera.capture', into: 'photo', source: 'camera' }] },
+    { type: 'Gallery', imageKey: 'photo', columns: 3 },
+    { type: 'List', valueKey: 'kcal', imageKey: 'photo' },
+  ] },
+};
+const dedup = autofix(validateSpec(doubleThumb).ok ? validateSpec(doubleThumb).spec : (doubleThumb as never));
+const listNode = (dedup.spec.ui.children as never[])[3] as Record<string, unknown>;
+assert.strictEqual(listNode.imageKey, undefined, 'миниатюра в List должна убираться при наличии Gallery');
+assert.ok(dedup.applied.includes('дубль миниатюры'));
+console.log('Графики и дубль миниатюры проверены');

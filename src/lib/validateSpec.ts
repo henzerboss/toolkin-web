@@ -291,6 +291,47 @@ function checkAiWiring(spec: MiniAppSpec, steps: Step[], serialized: string, err
     else if (!(into in spec.state)) errors.push(`camera.capture: into="${into}" is not declared in state`);
   }
 
+  // График, построенный не по тому полю, показывает пустоту вместо данных —
+  // самый обидный вид поломки: утилита работает, но выглядит сломанной.
+  const chartNodes: UiNode[] = [];
+  const findCharts = (node: UiNode): void => {
+    if (['Chart', 'LineChart', 'PieChart'].includes(node.type)) chartNodes.push(node);
+    childrenOf(node).forEach(findCharts);
+  };
+  findCharts(spec.ui);
+
+  for (const chart of chartNodes) {
+    if (!spec.records) {
+      errors.push(
+        `${chart.type}: charts read the record history, but there is no records block. ` +
+          'Add records with a valueField, or drop the chart',
+      );
+      continue;
+    }
+
+    if (chart.type === 'PieChart') {
+      const groupBy = typeof chart.groupBy === 'string' ? chart.groupBy : null;
+      if (groupBy && !spec.records.fields.some((field) => field.key === groupBy)) {
+        errors.push(`PieChart: groupBy="${groupBy}" is not a field of records.fields — the chart will be empty`);
+      }
+      const valueKey = typeof chart.valueKey === 'string' ? chart.valueKey : null;
+      if (valueKey && !spec.records.fields.some((field) => field.key === valueKey)) {
+        errors.push(`PieChart: valueKey="${valueKey}" is not a field of records.fields — the chart will be empty`);
+      }
+    }
+
+    // Chart и LineChart читают recordValues, а он берётся из valueField.
+    if (chart.type !== 'PieChart' && typeof chart.values === 'string') {
+      const numericField = spec.records.fields.find((field) => field.key === spec.records!.valueField);
+      if (chart.values.includes('recordValues') && numericField?.kind !== 'number') {
+        errors.push(
+          'Chart: recordValues comes from records.valueField, and that field must be a number. ' +
+            'Point valueField at the numeric field you want to plot',
+        );
+      }
+    }
+  }
+
   // Число в записи, полученное из свободного текста — самая частая причина
   // нулей в истории: Number("Калории: 650 ккал") даёт NaN.
   for (const step of steps) {

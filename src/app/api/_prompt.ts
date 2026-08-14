@@ -140,6 +140,8 @@ const PLAYBOOK: Record<string, string[]> = {
     '                          { "key": "kcal", "label": "Kcal", "kind": "number" }], "valueField": "kcal" },',
     '  { "action": "records.add", "values": { "photo": "{{photo}}", "kcal": "{{kcal}}" } }',
     '  { "type": "Gallery", "imageKey": "photo", "columns": 3 }',
+    'Pick ONE way to show photos in history: either a Gallery grid or a List with',
+    'imageKey. Both together print the same picture twice and look like a layout bug.',
   ],
 
   image: [
