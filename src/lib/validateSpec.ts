@@ -125,6 +125,17 @@ function checkWiring(spec: MiniAppSpec, errors: string[]): void {
   collectSteps(spec.ui, steps);
 
   const serialized = JSON.stringify(spec.ui);
+
+  /**
+   * То же дерево без кода песочницы.
+   *
+   * Правила про выражения писались для DSL, а внутри Sandbox живёт обычный
+   * JavaScript, где Math.random и fetch-подобные слова законны. Проверка по
+   * полному тексту заворачивала работающую змейку из-за random() в её коде.
+   */
+  const withoutSandbox = JSON.stringify(spec.ui, (key, value) =>
+    key === 'html' ? '' : (value as unknown),
+  );
   const named = (name: string) => steps.filter((step) => step.action === name);
   const usesPrefix = (prefix: string) => steps.some((step) => String(step.action ?? '').startsWith(prefix));
 
@@ -154,7 +165,7 @@ function checkWiring(spec: MiniAppSpec, errors: string[]): void {
 
   // random() в выражениях нет намеренно: пересчёт derived менял бы результат
   // на каждый рендер. Подсказываем это прямо, иначе модель будет пробовать снова.
-  if (/\brandom\s*\(/.test(serialized + JSON.stringify(spec.derived ?? {}))) {
+  if (/\brandom\s*\(/.test(withoutSandbox + JSON.stringify(spec.derived ?? {}))) {
     errors.push(
       'expressions: there is no random() function. For a one-off value use the state.random action. ' +
         'If randomness is needed during play — a computer opponent, a shuffled board — this is a game: ' +
@@ -167,8 +178,8 @@ function checkWiring(spec: MiniAppSpec, errors: string[]): void {
     if (key && !(key in spec.state)) errors.push(`state.random: key "${key}" is not in state`);
   }
 
-  checkAiWiring(spec, steps, serialized, errors);
-  checkArrayRendering(spec, serialized, errors);
+  checkAiWiring(spec, steps, withoutSandbox, errors);
+  checkArrayRendering(spec, withoutSandbox, errors);
   checkSingleSlotList(spec, steps, errors);
   checkSandbox(spec, errors);
 }

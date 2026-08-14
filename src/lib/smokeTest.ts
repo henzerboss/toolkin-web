@@ -35,16 +35,35 @@ const BUILTINS: Record<string, JsonValue> = {
   llmError: null,
 };
 
+/** Ключи, к которым привязаны поля выбора даты. */
+function dateKeys(spec: MiniAppSpec): Set<string> {
+  const keys = new Set<string>();
+
+  const walkNode = (node: UiNode): void => {
+    if ((node.type === 'DateField' || node.type === 'Calendar') && typeof node.bind === 'string') {
+      keys.add(node.bind);
+    }
+    childrenOf(node).forEach(walkNode);
+  };
+  walkNode(spec.ui);
+
+  return keys;
+}
+
 /** Значения-заглушки для полей, которые пользователь заполнит сам. */
 function seedState(spec: MiniAppSpec): Record<string, JsonValue> {
   const state: Record<string, JsonValue> = { ...spec.state };
+  const dates = dateKeys(spec);
 
-  // Нули заменяем на единицу: половина утилит делит на введённое значение,
-  // и проверка на нулевом состоянии показала бы деление на ноль везде,
-  // хотя у пользователя такого не будет.
   for (const [key, value] of Object.entries(state)) {
-    if (typeof value === 'number' && value === 0) state[key] = 1;
+    if (typeof value !== 'number' || value !== 0) continue;
+
+    // Поле даты заполняется датой, а не единицей: одна миллисекунда — это
+    // 1 января 1970 года, и проверка «заполненного» состояния показывала бы
+    // те же семидесятые, от которых мы и защищаемся.
+    state[key] = dates.has(key) ? Date.now() - 7 * 86_400_000 : 1;
   }
+
   return state;
 }
 
@@ -137,6 +156,38 @@ class Simulator {
 
       if (typeof value === 'number' && !Number.isFinite(value)) {
         this.issues.push({ path, message: `template {{${expression}}} shows NaN on screen` });
+      }
+
+      /**
+       * Дата, посчитанная от незаданного поля.
+       *
+       * Самая заметная для человека поломка: рядом стоят «14 августа 2026» и
+       * «следующий цикл 29 января 1970». Причина всегда одна — формула считает
+       * от даты, которую пользователь ещё не выбрал, а ноль в состоянии это
+       * 1 января 1970 года.
+       */
+      if ((filter === 'date' || filter === 'time') && typeof value === 'number') {
+        const year = new Date(value).getFullYear();
+        if (year < 2000) {
+          this.issues.push({
+            path,
+            message:
+              `template {{${expression}}} shows a 1970 date because it is computed from a date ` +
+              'the person has not picked yet. Hide the block until the date is set with ' +
+              '"visible": "<dateField> > 0", or guard the formula with a ternary',
+          });
+        }
+      }
+
+      // Тот же дефект в другом виде: «день цикла 20680» — это дни, прошедшие
+      // с 1970 года, а не с начала цикла.
+      if (typeof value === 'number' && !filter && Math.abs(value) > 10_000 && /days|дн/i.test(expression)) {
+        this.issues.push({
+          path,
+          message:
+            `template {{${expression}}} yields ${Math.round(value)} — that is days since 1970, ` +
+            'which means it is computed from an unset date. Guard it the same way',
+        });
       }
 
       // Число без фильтра выводится как 880.0000000000001 — это самая
@@ -244,9 +295,19 @@ class Simulator {
   }
 }
 
-function walk(node: UiNode, path: string, visit: (node: UiNode, path: string) => void): void {
+function walk(
+  node: UiNode,
+  path: string,
+  visit: (node: UiNode, path: string) => void,
+  isVisible?: (node: UiNode) => boolean,
+): void {
+  // Скрытый блок не проверяется: пользователь его не видит, и требовать от
+  // него осмысленных значений бессмысленно. Именно так работает защита
+  // "visible": "lastPeriod > 0" — блок с расчётом появляется после выбора даты.
+  if (isVisible && !isVisible(node)) return;
+
   visit(node, path);
-  childrenOf(node).forEach((child, index) => walk(child, `${path}.children[${index}]`, visit));
+  childrenOf(node).forEach((child, index) => walk(child, `${path}.children[${index}]`, visit, isVisible));
 }
 
 export interface SmokeResult {
@@ -266,15 +327,33 @@ export function smokeTest(spec: MiniAppSpec): SmokeResult {
   // и именно это чаще всего видит человек.
   const fresh = new Simulator(spec, evaluator, 'fresh');
   fresh.checkDerived();
-  walk(spec.ui, 'ui', (node, path) => {
-    for (const key of ['value', 'label', 'hint']) {
-      const raw = node[key];
-      if (typeof raw === 'string') fresh.checkTemplate(raw, `${path}.${key} (on first open)`);
-    }
-  });
+
+  const visibleOnFirstOpen = (node: UiNode): boolean => {
+    if (typeof node.visible !== 'string') return true;
+    const value = evaluator.evaluateSafe(node.visible, fresh.scope);
+    return value !== null && value !== false && value !== 0 && value !== '';
+  };
+
+  walk(
+    spec.ui,
+    'ui',
+    (node, path) => {
+      for (const key of ['value', 'label', 'hint']) {
+        const raw = node[key];
+        if (typeof raw === 'string') fresh.checkTemplate(raw, `${path}.${key} (on first open)`);
+      }
+    },
+    visibleOnFirstOpen,
+  );
 
   const simulator = new Simulator(spec, evaluator);
   simulator.checkDerived();
+
+  const visibleWhenFilled = (node: UiNode): boolean => {
+    if (typeof node.visible !== 'string') return true;
+    const value = evaluator.evaluateSafe(node.visible, simulator.scope);
+    return value !== null && value !== false && value !== 0 && value !== '';
+  };
 
   walk(spec.ui, 'ui', (node, path) => {
     // Тексты, которые увидит пользователь.
@@ -298,7 +377,7 @@ export function smokeTest(spec: MiniAppSpec): SmokeResult {
     }
 
     if (node.type === 'Button') simulator.pressButton(node, path);
-  });
+  }, visibleWhenFilled);
 
   // Утилита без единого показанного результата бесполезна, даже если валидна.
   const serialized = JSON.stringify(spec.ui);

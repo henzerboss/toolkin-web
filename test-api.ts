@@ -8,6 +8,7 @@ import { PIPELINE_VERSION, cacheKey } from './src/lib/specCacheKey';
 import { buildGeneratePrompt, buildSystemInstruction } from './src/app/api/_prompt';
 import { creditsForProduct } from './src/lib/pricing';
 import { DEMO_SPECS } from './src/lib/exampleSpecs';
+import { GALLERY, GALLERY_GROUPS } from './src/lib/gallery';
 
 // Валидатор сайта и валидатор приложения должны совпадать: спека, принятая
 // одним, обязана проходить у другого, иначе человек платит за генерацию,
@@ -591,3 +592,68 @@ assert.match(
   /never touches toolkin/,
 );
 console.log('Собственный виджет проверен');
+
+// Расчёты от незаданной даты: на экране соседствуют «14 августа 2026»
+// и «следующий цикл 29 января 1970». Ноль в состоянии — это 1970 год.
+const unsetDate = {
+  schemaVersion: 1, id: 'cycle', version: 1,
+  manifest: { name: 'Женский цикл', icon: 'x', color: 'rose', locale: 'ru' },
+  capabilities: [],
+  state: { lastPeriod: 0, cycleLength: 28 },
+  derived: {
+    nextPeriod: 'addDays(lastPeriod, cycleLength)',
+    daysInCycle: 'daysBetween(lastPeriod, nowMs)',
+  },
+  ui: { type: 'Screen', children: [
+    { type: 'Stat', label: 'До цикла', value: '{{max(daysBetween(nowMs, nextPeriod), 0) | integer}}',
+      hint: 'Следующий: {{nextPeriod | date}}' },
+    { type: 'KeyValue', label: 'День цикла', value: 'День {{daysInCycle}}' },
+    { type: 'DateField', label: 'Дата начала', bind: 'lastPeriod' },
+  ] },
+};
+const unsetValid = validateSpec(unsetDate);
+assert.ok(unsetValid.ok, 'структурно спека корректна — это работа прогона');
+const unsetSmoke = smokeTest(unsetValid.spec);
+assert.ok(!unsetSmoke.ok);
+assert.match(unsetSmoke.issues.join('\n'), /shows a 1970 date/);
+assert.match(unsetSmoke.issues.join('\n'), /days since 1970/);
+
+// Та же утилита с защитой — проходит.
+const guarded = JSON.parse(JSON.stringify(unsetDate));
+guarded.ui.children[0].visible = 'lastPeriod > 0';
+guarded.ui.children[1].visible = 'lastPeriod > 0';
+assert.ok(smokeTest(validateSpec(guarded).ok ? validateSpec(guarded).spec : (guarded as never)).ok,
+  'с visible-защитой прогон должен проходить');
+console.log('Расчёты от незаданной даты проверены');
+
+// Галерея — регрессионный набор. Двадцать утилит покрывают все ветки DSL,
+// и то, что перестало собираться, показывает дыру в языке сразу, а не через
+// месяц по жалобе пользователя.
+{
+  const failed: string[] = [];
+
+  for (const spec of GALLERY) {
+    const validation = validateSpec(spec);
+    if (!validation.ok) {
+      failed.push(`${spec.id}: ${validation.errors[0]}`);
+      continue;
+    }
+    const smoke = smokeTest(autofix(validation.spec).spec);
+    if (!smoke.ok) failed.push(`${spec.id}: ${smoke.issues[0]}`);
+  }
+
+  assert.strictEqual(failed.length, 0, `галерея должна собираться целиком:\n  ${failed.join('\n  ')}`);
+
+  // Группы и список не должны разъезжаться: утилита вне группы не покажется.
+  const grouped = new Set(GALLERY_GROUPS.flatMap((group) => group.ids));
+  const ungrouped = GALLERY.filter((spec) => !grouped.has(spec.id)).map((spec) => spec.id);
+  assert.deepStrictEqual(ungrouped, [], 'каждая утилита галереи должна быть в группе');
+
+  const phantom = [...grouped].filter((id) => !GALLERY.some((spec) => spec.id === id));
+  assert.deepStrictEqual(phantom, [], 'группа не должна ссылаться на несуществующую утилиту');
+
+  const ids = GALLERY.map((spec) => spec.id);
+  assert.strictEqual(new Set(ids).size, ids.length, 'идентификаторы должны быть уникальны');
+
+  console.log(`Галерея проверена: ${GALLERY.length} утилит, ${GALLERY_GROUPS.length} групп`);
+}
