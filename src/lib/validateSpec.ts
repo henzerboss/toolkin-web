@@ -69,6 +69,21 @@ export function validateSpec(input: unknown): SpecValidation {
     }
   }
 
+  // Захардкоженная дата в состоянии — причина того, что календарь открывается
+  // на позапрошлом году, а обратный отсчёт считает от чужого дня. Правило
+  // в промпте есть, но проверять его надо кодом: модель нарушает его регулярно.
+  const YEAR_MS = 365 * 86_400_000;
+  for (const [key, value] of Object.entries(spec.state)) {
+    if (typeof value !== 'number') continue;
+    // Похоже на timestamp: миллисекунды с 1970 года дают 13-значные числа.
+    if (value > 1_000_000_000_000 && Math.abs(value - Date.now()) > YEAR_MS) {
+      errors.push(
+        `state.${key}: a hardcoded date (${new Date(value).toISOString().slice(0, 10)}). ` +
+          'Initialise dates with 0 and treat 0 as "not set yet"; take today from nowMs',
+      );
+    }
+  }
+
   for (const key of spec.persist ?? []) {
     if (!(key in spec.state)) errors.push(`persist: field "${key}" is not in state — add it to state or drop it from persist`);
   }
@@ -153,7 +168,30 @@ function checkWiring(spec: MiniAppSpec, errors: string[]): void {
   }
 
   checkAiWiring(spec, steps, serialized, errors);
+  checkArrayRendering(spec, serialized, errors);
   checkSandbox(spec, errors);
+}
+
+/**
+ * Массив, выведенный через шаблон, печатается на экране как JSON — с
+ * квадратными скобками и кавычками. Для пользователя это выглядит так, будто
+ * приложение показало емувнутренности вместо результата.
+ */
+function checkArrayRendering(spec: MiniAppSpec, serialized: string, errors: string[]): void {
+  const arrayKeys = Object.entries(spec.state)
+    .filter(([, value]) => Array.isArray(value))
+    .map(([key]) => key);
+
+  for (const key of arrayKeys) {
+    // {{key}} или {{key | filter}} — вывод массива текстом.
+    const template = new RegExp(`\\{\\{\\s*${key}\\s*(\\||\\}\\})`);
+    if (!template.test(serialized)) continue;
+
+    errors.push(
+      `state.${key} is an array but is printed through a template — the screen will show ` +
+        `raw JSON with brackets and quotes. Render it with { "type": "Bullets", "items": "${key}" }`,
+    );
+  }
 }
 
 /**

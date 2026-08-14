@@ -470,3 +470,44 @@ const listNode = (dedup.spec.ui.children as never[])[3] as Record<string, unknow
 assert.strictEqual(listNode.imageKey, undefined, 'миниатюра в List должна убираться при наличии Gallery');
 assert.ok(dedup.applied.includes('дубль миниатюры'));
 console.log('Графики и дубль миниатюры проверены');
+
+// Массив, выведенный шаблоном, печатается как JSON — пользователь видит
+// квадратные скобки и кавычки вместо списка ингредиентов.
+const arrayInTemplate = {
+  schemaVersion: 1, id: 'r', version: 1,
+  manifest: { name: 'Рецепты', icon: 'x', color: 'amber', locale: 'ru' },
+  capabilities: ['llm'],
+  state: { products: '', ingredients: [] },
+  ui: { type: 'Screen', children: [
+    { type: 'TextField', label: 'Продукты', bind: 'products' },
+    { type: 'Button', title: 'Рецепт', variant: 'primary', disabled: 'llmBusy',
+      onPress: [{ action: 'llm.ask', prompt: '{{products}}', fields: { ingredients: 'массив строк' } }] },
+    { type: 'Text', value: '{{ingredients}}' },
+  ] },
+};
+assert.match(
+  validateSpec(arrayInTemplate).ok ? '' : validateSpec(arrayInTemplate).errors.join('\n'),
+  /is an array but is printed through a template/,
+);
+
+// Тот же рецепт с Bullets — валиден.
+const withBullets = JSON.parse(JSON.stringify(arrayInTemplate));
+withBullets.ui.children[2] = { type: 'Bullets', label: 'Состав', items: 'ingredients' };
+assert.ok(validateSpec(withBullets).ok, 'Bullets должен закрывать вывод массива');
+
+// Захардкоженная дата: календарь открывался на позапрошлом году.
+const hardcodedDate = {
+  schemaVersion: 1, id: 'c', version: 1,
+  manifest: { name: 'Календарь', icon: 'x', color: 'rose', locale: 'ru' },
+  capabilities: [], state: { lastPeriod: 1738368000000, cycleLength: 28 },
+  derived: { next: 'addDays(lastPeriod, cycleLength)' },
+  ui: { type: 'Screen', children: [
+    { type: 'Stat', label: 'Следующие', value: '{{next | date}}' },
+    { type: 'DateField', label: 'Начало', bind: 'lastPeriod' },
+  ] },
+};
+assert.match(
+  validateSpec(hardcodedDate).ok ? '' : validateSpec(hardcodedDate).errors.join('\n'),
+  /hardcoded date/,
+);
+console.log('Массивы и захардкоженные даты проверены');

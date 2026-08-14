@@ -186,6 +186,14 @@ function correct(plan: Plan): Plan {
     components.add('Image');
   }
 
+  // Утилита, которая и пишет, и рисует, — обычное дело: рецепт с фото блюда,
+  // карточка товара, идея интерьера. Раньше план выбирал один тип, и второй
+  // раздел промпта не подключался: модель просто не знала про image.generate.
+  if (capabilities.has('image') && capabilities.has('llm')) {
+    components.add('Image');
+    components.add('Bullets');
+  }
+
   if (capabilities.has('camera')) {
     components.add('Image');
     // Gallery здесь намеренно НЕ добавляется. Раньше добавлялась — и вместе

@@ -39,6 +39,7 @@ export const COMPONENTS: ComponentDef[] = [
   { type: 'Tabs', description: 'tabs sharing one state; tabs: [{label, children}] — use it when the utility has more than one job (today / history / settings)', required: ['tabs'] },
   { type: 'Section', description: 'titled group of related blocks; title, children', required: ['title'] },
   { type: 'EmptyState', description: 'placeholder shown while a list is empty; title, hint, visible — always pair it with a history block', required: ['title'] },
+  { type: 'Bullets', description: 'renders an array of strings as a list; items is an expression returning the array, numbered:true for steps — never print an array through a template, it comes out as raw JSON', required: ['items'] },
   { type: 'KeyValue', description: 'compact label—value row for secondary numbers; use instead of a second Stat', required: ['label', 'value'] },
   { type: 'Row', description: 'horizontal row; align: start | center | between', container: true },
   { type: 'Text', description: 'text; value, variant: title | body | caption', required: ['value'] },

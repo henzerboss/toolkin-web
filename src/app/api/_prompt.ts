@@ -122,6 +122,15 @@ const PLAYBOOK: Record<string, string[]> = {
     '    "fields": { "kcal": "calories as a number", "dish": "short dish name" } }',
     'Each key of fields is written into the state key of the same name, already parsed.',
     'Use into only for answers that are genuinely free text — a recipe, an explanation.',
+    '',
+    'Lists from the model. Ask for an array and render it with Bullets — never through',
+    'a template, or the screen shows ["Chicken: 500 g","Potato: 600 g"] with brackets:',
+    '  "state": { "ingredients": [], "steps": [] },',
+    '  { "action": "llm.ask", "prompt": "Recipe from: {{products}}",',
+    '    "fields": { "ingredients": "array of strings, one ingredient with amount each",',
+    '                "steps": "array of strings, one cooking step each" } }',
+    '  { "type": "Bullets", "label": "Ingredients", "items": "ingredients" }',
+    '  { "type": "Bullets", "label": "Steps", "items": "steps", "numbered": true }',
   ],
 
   camera: [
@@ -146,6 +155,22 @@ const PLAYBOOK: Record<string, string[]> = {
 
   image: [
     'Image generation:',
+    '',
+    'Combining text and picture. When a utility both writes something and illustrates it,',
+    'chain the actions in ONE button: the person should not press twice for one result.',
+    'Build the image prompt from what the model just returned, and write it in English:',
+    '  "state": { "products": "", "dishName": "", "ingredients": [], "picture": "" },',
+    '  { "type": "Button", "title": "Create recipe", "variant": "primary", "disabled": "llmBusy",',
+    '    "onPress": [',
+    '      { "action": "llm.ask", "prompt": "Recipe from: {{products}}",',
+    '        "fields": { "dishName": "dish name", "imagePrompt": "short English description',
+    '                    of the finished dish for an image generator, e.g. baked chicken with',
+    '                    potatoes, close-up, food photography",',
+    '                    "ingredients": "array of strings" } },',
+    '      { "action": "image.generate", "prompt": "{{imagePrompt}}", "into": "picture",',
+    '        "aspect": "landscape" } ] }',
+    'Ask the model for imagePrompt as a separate field — it knows the dish, and a prompt',
+    'assembled from raw user input gives a worse picture.',
     '  { "action": "image.generate", "prompt": "{{idea}}, minimal, flat style",',
     '    "into": "picture", "aspect": "square" }',
     '  { "type": "Image", "source": "picture", "ratio": "square", "empty": "Your picture appears here" }',
@@ -214,6 +239,8 @@ function sectionsFor(plan?: PromptPlan): string[] {
   if (plan.needsStructuredAi) sections.add('structuredAi');
   if (plan.capabilities.includes('camera')) sections.add('camera');
   if (plan.capabilities.includes('image')) sections.add('image');
+  // Списки нужны везде, где модель возвращает перечисления.
+  if (plan.needsStructuredAi || plan.components.includes('Bullets')) sections.add('structuredAi');
   if (plan.kind === 'game' || plan.kind === 'other') sections.add('random');
 
   return [...sections];
